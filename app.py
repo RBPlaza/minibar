@@ -9,12 +9,13 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom Styling for Status Badges
+# Custom Styling for Badges and Multiline Table Formatting
 st.markdown("""
     <style>
     .badge-paid { background-color: #d4edda; color: #155724; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
     .badge-partial { background-color: #fff3cd; color: #856404; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
     .badge-unpaid { background-color: #f8d7da; color: #721c24; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+    div[data-testid="stDataFrame"] div[aria-label="Grid cell"] { white-space: pre-line !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -103,32 +104,32 @@ if pdf_file or xml_file:
     elif xml_file:
         st.info("ℹ️ XML uploaded. Upload your PDF file to cross-reference transactions.")
 
-    # Audit Data Baseline
+    # Audit Data Baseline with multiline item formatting
     audit_data = [
-        {"Room Number": "210", "Inspected Consumption": "2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction or routing found in XML."},
-        {"Room Number": "508", "Inspected Consumption": "2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction or routing found in XML."},
-        {"Room Number": "511", "Inspected Consumption": "1× Radisson Blu voda", "Status": "Paid", "Details": "Moved to Room 9016 (#511=>RADISSON VODE MEMBERJI #9016)."},
-        {"Room Number": "701", "Inspected Consumption": "2× Coca Cola 0,33l, 2× Voda Naturelle 0,5l, 1× Voda Radenska 0,5l, 2× Laško pivo / Heineken 0,33l, 1× Čips 40g, 2× Radisson Blu voda", "Status": "Partially Paid", "Details": "Paid directly/absorbed via routing. Missing 2× Voda Naturelle 0,5l & 2× Laško pivo / Heineken 0,33l."},
-        {"Room Number": "703", "Inspected Consumption": "1× Jagermaister 0,02l, 2× Radisson Blu voda", "Status": "Paid", "Details": "Routed to Room 701 (Routed From LUSHTAKU TUANA Of Room #703)."},
-        {"Room Number": "704", "Inspected Consumption": "1× Radisson Blu voda", "Status": "Paid", "Details": "Paid directly, plus received 1× water routed from Room 705."},
-        {"Room Number": "705", "Inspected Consumption": "1× Radisson Blu voda", "Status": "Paid", "Details": "Routed to Room 704 (Routed From MEHI SEJFEDIN Of Room #705)."},
-        {"Room Number": "719", "Inspected Consumption": "1× Coca Cola 0,33l, 2× Whisky JW Red label 0,05l, 2× Radisson Blu voda", "Status": "Partially Paid", "Details": "Coca Cola & Whisky paid. 2× Radisson Blu voda missing."},
-        {"Room Number": "802", "Inspected Consumption": "1× Radisson Blu voda", "Status": "Partially Paid", "Details": "Mineral water logged. 1× Radisson Blu voda missing."},
-        {"Room Number": "804", "Inspected Consumption": "2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "816", "Inspected Consumption": "1× Voda Naturelle 0,5l", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "911", "Inspected Consumption": "2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "914", "Inspected Consumption": "1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "919", "Inspected Consumption": "2× Radisson Blu voda", "Status": "Unpaid", "Details": "Marked in XML as checked with zero consumption (PREVERJENO, NI BILO PORABE)."},
-        {"Room Number": "1005", "Inspected Consumption": "2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "1008", "Inspected Consumption": "1× Voda Naturelle 0,5l, 2× Radisson Blu voda", "Status": "Paid", "Details": "Routed to Room 701 (Routed From NURA FADIL Of Room #1008)."},
-        {"Room Number": "1011", "Inspected Consumption": "2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "1101", "Inspected Consumption": "2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "1108", "Inspected Consumption": "1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "1112", "Inspected Consumption": "1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "1113", "Inspected Consumption": "1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "1115", "Inspected Consumption": "2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
-        {"Room Number": "1119", "Inspected Consumption": "2× Coca Cola 0,33l, 2× Radisson Blu voda", "Status": "Paid", "Details": "Logged directly to Room 1119."},
-        {"Room Number": "1219", "Inspected Consumption": "1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."}
+        {"Room Number": "210", "Inspected Consumption": "• 2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction or routing found in XML."},
+        {"Room Number": "508", "Inspected Consumption": "• 2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction or routing found in XML."},
+        {"Room Number": "511", "Inspected Consumption": "• 1× Radisson Blu voda", "Status": "Paid", "Details": "Moved to Room 9016 (#511=>RADISSON VODE MEMBERJI #9016)."},
+        {"Room Number": "701", "Inspected Consumption": "• 2× Coca Cola 0,33l\n• 2× Voda Naturelle 0,5l\n• 1× Voda Radenska 0,5l\n• 2× Laško pivo / Heineken 0,33l\n• 1× Čips 40g\n• 2× Radisson Blu voda", "Status": "Partially Paid", "Details": "Paid directly/absorbed via routing. Missing 2× Voda Naturelle 0,5l & 2× Laško pivo / Heineken 0,33l."},
+        {"Room Number": "703", "Inspected Consumption": "• 1× Jagermaister 0,02l\n• 2× Radisson Blu voda", "Status": "Paid", "Details": "Routed to Room 701 (Routed From LUSHTAKU TUANA Of Room #703)."},
+        {"Room Number": "704", "Inspected Consumption": "• 1× Radisson Blu voda", "Status": "Paid", "Details": "Paid directly, plus received 1× water routed from Room 705."},
+        {"Room Number": "705", "Inspected Consumption": "• 1× Radisson Blu voda", "Status": "Paid", "Details": "Routed to Room 704 (Routed From MEHI SEJFEDIN Of Room #705)."},
+        {"Room Number": "719", "Inspected Consumption": "• 1× Coca Cola 0,33l\n• 2× Whisky JW Red label 0,05l\n• 2× Radisson Blu voda", "Status": "Partially Paid", "Details": "Coca Cola & Whisky paid. 2× Radisson Blu voda missing."},
+        {"Room Number": "802", "Inspected Consumption": "• 1× Radisson Blu voda", "Status": "Partially Paid", "Details": "Mineral water logged. 1× Radisson Blu voda missing."},
+        {"Room Number": "804", "Inspected Consumption": "• 2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "816", "Inspected Consumption": "• 1× Voda Naturelle 0,5l", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "911", "Inspected Consumption": "• 2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "914", "Inspected Consumption": "• 1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "919", "Inspected Consumption": "• 2× Radisson Blu voda", "Status": "Unpaid", "Details": "Marked in XML as checked with zero consumption (PREVERJENO, NI BILO PORABE)."},
+        {"Room Number": "1005", "Inspected Consumption": "• 2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "1008", "Inspected Consumption": "• 1× Voda Naturelle 0,5l\n• 2× Radisson Blu voda", "Status": "Paid", "Details": "Routed to Room 701 (Routed From NURA FADIL Of Room #1008)."},
+        {"Room Number": "1011", "Inspected Consumption": "• 2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "1101", "Inspected Consumption": "• 2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "1108", "Inspected Consumption": "• 1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "1112", "Inspected Consumption": "• 1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "1113", "Inspected Consumption": "• 1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "1115", "Inspected Consumption": "• 2× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."},
+        {"Room Number": "1119", "Inspected Consumption": "• 2× Coca Cola 0,33l\n• 2× Radisson Blu voda", "Status": "Paid", "Details": "Logged directly to Room 1119."},
+        {"Room Number": "1219", "Inspected Consumption": "• 1× Radisson Blu voda", "Status": "Unpaid", "Details": "No transaction found in XML."}
     ]
 
     df_results = pd.DataFrame(audit_data)
