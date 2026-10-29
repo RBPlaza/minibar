@@ -63,21 +63,21 @@ with col2:
 
 def extract_pdf_consumption(uploaded_pdf):
     """
-    Parses multi-column Housekeeping PDF reports using layout preservation 
-    and column splitting to prevent cross-contamination between rooms.
+    Dynamically parses multi-column Housekeeping PDF reports by identifying 
+    the full glass symbol (extracted as '9') followed by valid room numbers,
+    while utilizing layout separation to prevent cross-contamination.
     """
     room_consumption = defaultdict(list)
     try:
         full_text = ""
         with pdfplumber.open(uploaded_pdf) as pdf:
             for page in pdf.pages:
-                # layout=True maintains spatial spacing between side-by-side columns
                 t = page.extract_text(layout=True)
                 if t:
                     full_text += t + "\n"
         
         lines = full_text.split("\n")
-        current_room = None
+        current_rooms = []
         
         for line in lines:
             line_str = line.rstrip()
@@ -92,12 +92,13 @@ def extract_pdf_consumption(uploaded_pdf):
                 if not col:
                     continue
                 
-                # Check for room header in this specific column
-                room_match = re.search(r'\b9\s+(\d{3,4})\b', col)
-                if room_match:
-                    current_room = room_match.group(1)
-                    if current_room not in room_consumption:
-                        room_consumption[current_room] = []
+                # Match room headers: '9 ' (glass symbol) followed by 3-4 digits representing a room number
+                room_matches = re.findall(r'\b9\s+(\d{3,4})\b', col)
+                if room_matches:
+                    current_rooms = [r for r in room_matches if 100 <= int(r) <= 2500]
+                    for r in current_rooms:
+                        if r not in room_consumption:
+                            room_consumption[r] = []
                 
                 # Check for minibar items in this column
                 matched_items = []
@@ -106,12 +107,15 @@ def extract_pdf_consumption(uploaded_pdf):
                     if clean_key.lower() in col.lower():
                         qty_match = re.search(r'(\d+)\s*[\d,]*\s*€', col)
                         qty = qty_match.group(1) if qty_match else "1"
-                        matched_items.append(f"{qty}× {pdf_item_key}")
+                        item_str = f"{qty}× {pdf_item_key}"
+                        if item_str not in matched_items:
+                            matched_items.append(item_str)
 
-                if matched_items and current_room:
-                    for item in matched_items:
-                        if item not in room_consumption[current_room]:
-                            room_consumption[current_room].append(item)
+                if matched_items and current_rooms:
+                    for r in current_rooms:
+                        for item in matched_items:
+                            if item not in room_consumption[r]:
+                                room_consumption[r].append(item)
 
         cleaned_data = {r: items for r, items in room_consumption.items() if items}
         return cleaned_data if cleaned_data else room_consumption
@@ -156,13 +160,14 @@ def parse_xml_logs(xml_bytes):
         return {}
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Dynamically reconciles PDF consumption against XML records."""
+    """Dynamically reconciles PDF consumption against XML records for discovered rooms."""
     audit_results = []
     
-    all_rooms = sorted(list(set(list(pdf_rooms.keys()) + list(xml_rooms.keys()))), key=lambda x: int(x) if x.isdigit() else 0)
+    # Dynamically sort all rooms discovered in the uploaded PDF
+    discovered_rooms = sorted(list(set(list(pdf_rooms.keys()) + list(xml_rooms.keys()))), key=lambda x: int(x) if x.isdigit() else 0)
     
-    for room in all_rooms:
-        pdf_items = pdf_rooms.get(room, ["1x Radisson Blu voda"])
+    for room in discovered_rooms:
+        pdf_items = pdf_rooms.get(room, ["1× Radisson Blu voda"])
         xml_info = xml_rooms.get(room, {"items": [], "routings": [], "zeroed": False, "raw_text": ""})
         
         xml_text_blob = xml_info["raw_text"].upper()
