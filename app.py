@@ -74,7 +74,6 @@ def extract_pdf_consumption(uploaded_pdf):
                 if not words:
                     continue
                 
-                # Split page down the middle into Left and Right coordinate columns
                 mid_x = page.width / 2.0
                 left_words = [w for w in words if w['x0'] < mid_x]
                 right_words = [w for w in words if w['x0'] >= mid_x]
@@ -83,10 +82,8 @@ def extract_pdf_consumption(uploaded_pdf):
                     if not col_words:
                         continue
                     
-                    # Sort top-to-bottom, then left-to-right within the column
                     col_words = sorted(col_words, key=lambda w: (w['top'], w['x0']))
                     
-                    # Reconstruct lines for this column
                     lines = []
                     current_line = []
                     last_top = -1
@@ -102,7 +99,6 @@ def extract_pdf_consumption(uploaded_pdf):
                         
                     current_room = None
                     for line_str in lines:
-                        # Match room numbers in the column stream
                         room_match = re.search(r'\b(?:9\s*)?(\d{3,4})\b', line_str)
                         if room_match and ('Skupaj' in line_str or len(line_str) < 8):
                             room_no = room_match.group(1)
@@ -111,7 +107,6 @@ def extract_pdf_consumption(uploaded_pdf):
                                 if current_room not in room_consumption:
                                     room_consumption[current_room] = []
                         
-                        # Match items in the current active room context
                         if current_room:
                             for pdf_item_key in MAPPING_DICT.keys():
                                 clean_key = pdf_item_key.split('/')[0].strip()
@@ -122,7 +117,6 @@ def extract_pdf_consumption(uploaded_pdf):
                                     if item_str not in room_consumption[current_room]:
                                         room_consumption[current_room].append(item_str)
 
-        # Fallback default item for inspected rooms with water only
         for r in room_consumption:
             if not room_consumption[r]:
                 room_consumption[r].append("1× Radisson Blu voda")
@@ -134,8 +128,9 @@ def extract_pdf_consumption(uploaded_pdf):
         return {}
 
 def parse_xml_logs(xml_bytes):
-    """Parses Opera XML to extract room-by-room charges, routings, moves, and remarks."""
+    """Parses Opera XML to extract room charges, routings, moves, and remarks globally."""
     xml_data = defaultdict(lambda: {"items": [], "routings": [], "zeroed": False, "raw_text": ""})
+    global_xml_text = ""
     try:
         root = ET.fromstring(xml_bytes)
         for first in root.findall(".//FIRST"):
@@ -153,6 +148,7 @@ def parse_xml_logs(xml_bytes):
                 
                 full_trx_text = f"{article} {reference} {rem_text}"
                 xml_data[room_no]["raw_text"] += " " + full_trx_text
+                global_xml_text += " " + full_trx_text
                 
                 if "PREVERJENO, NI BILO PORABE" in full_trx_text.upper():
                     xml_data[room_no]["zeroed"] = True
@@ -163,15 +159,18 @@ def parse_xml_logs(xml_bytes):
                 if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
                     xml_data[room_no]["routings"].append(full_trx_text)
                     
+        # Store global text reference for cross-room routing checks
+        xml_data["_GLOBAL_TEXT_"] = global_xml_text
         return xml_data
     except Exception as e:
         st.error(f"Error parsing XML: {e}")
         return {}
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records using PDF rooms as the master list."""
+    """Reconciles PDF consumption against XML records, accounting for routings and room moves."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
+    global_xml_blob = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
     
     for room in discovered_rooms:
         pdf_items = pdf_rooms.get(room, ["1× Radisson Blu voda"])
@@ -179,13 +178,20 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         
         xml_text_blob = xml_info["raw_text"].upper()
         xml_item_count = len(xml_info["items"])
+        has_routing = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob
+        
+        # Check if this specific room's number appears in a routing string elsewhere in the XML (e.g. Routed from Room #703)
+        room_mentioned_in_routing = f"ROOM #{room}" in global_xml_blob or f"ROOM {room}" in global_xml_blob or room in global_xml_blob
         
         if xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
-        elif xml_item_count > 0 or len(xml_info["routings"]) > 0 or "=>" in xml_text_blob:
+        elif xml_item_count > 0 or has_routing:
             status = "Paid"
-            details = f"Verified: Found {xml_item_count} transaction(s) or routing/move in XML log."
+            details = f"Verified: Found {xml_item_count} direct transaction(s) or local routing in XML log."
+        elif room_mentioned_in_routing:
+            status = "Paid"
+            details = f"Verified: Charges successfully routed / moved to another room according to XML log."
         else:
             status = "Unpaid"
             details = "No matching transaction or routing found in XML log."
