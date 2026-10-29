@@ -63,49 +63,66 @@ with col2:
 
 def extract_pdf_consumption(uploaded_pdf):
     """
-    Robustly parses multi-column Housekeeping PDF reports by scanning raw text 
-    and capturing all rooms marked with the glass symbol ('9 ').
+    Parses Flexkeeping 2-column grid PDFs by splitting words into independent 
+    left and right coordinate columns, sorting each top-to-bottom.
     """
     room_consumption = defaultdict(list)
     try:
-        full_text = ""
         with pdfplumber.open(uploaded_pdf) as pdf:
             for page in pdf.pages:
-                t = page.extract_text()
-                if t:
-                    full_text += t + "\n"
-        
-        lines = full_text.split("\n")
-        current_room = None
-        
-        for line in lines:
-            line_str = line.strip()
-            if not line_str:
-                continue
-
-            # Detect room header (e.g. '9 210', '9 701', etc.)
-            room_match = re.search(r'\b9\s+(\d{3,4})\b', line_str)
-            if room_match:
-                room_no = room_match.group(1)
-                if 100 <= int(room_no) <= 2500:
-                    current_room = room_no
-                    if current_room not in room_consumption:
-                        room_consumption[current_room] = []
-
-            # If we have an active room, look for minibar items in the line
-            if current_room:
-                for pdf_item_key in MAPPING_DICT.keys():
-                    clean_key = pdf_item_key.split('/')[0].strip()
-                    if clean_key.lower() in line_str.lower():
-                        # Extract quantity if present
-                        qty_match = re.search(r'(\d+)\s*[\d,]*\s*€', line_str)
-                        qty = qty_match.group(1) if qty_match else "1"
-                        item_str = f"{qty}× {pdf_item_key}"
+                words = page.extract_words()
+                if not words:
+                    continue
+                
+                # Split page down the middle into Left and Right coordinate columns
+                mid_x = page.width / 2.0
+                left_words = [w for w in words if w['x0'] < mid_x]
+                right_words = [w for w in words if w['x0'] >= mid_x]
+                
+                for col_words in [left_words, right_words]:
+                    if not col_words:
+                        continue
+                    
+                    # Sort top-to-bottom, then left-to-right within the column
+                    col_words = sorted(col_words, key=lambda w: (w['top'], w['x0']))
+                    
+                    # Reconstruct lines for this column
+                    lines = []
+                    current_line = []
+                    last_top = -1
+                    for w in col_words:
+                        if last_top == -1 or abs(w['top'] - last_top) < 4:
+                            current_line.append(w['text'])
+                        else:
+                            lines.append(" ".join(current_line))
+                            current_line = [w['text']]
+                        last_top = w['top']
+                    if current_line:
+                        lines.append(" ".join(current_line))
                         
-                        if item_str not in room_consumption[current_room]:
-                            room_consumption[current_room].append(item_str)
+                    current_room = None
+                    for line_str in lines:
+                        # Match room numbers in the column stream
+                        room_match = re.search(r'\b(?:9\s*)?(\d{3,4})\b', line_str)
+                        if room_match and ('Skupaj' in line_str or len(line_str) < 8):
+                            room_no = room_match.group(1)
+                            if 100 <= int(room_no) <= 2500:
+                                current_room = room_no
+                                if current_room not in room_consumption:
+                                    room_consumption[current_room] = []
+                        
+                        # Match items in the current active room context
+                        if current_room:
+                            for pdf_item_key in MAPPING_DICT.keys():
+                                clean_key = pdf_item_key.split('/')[0].strip()
+                                if clean_key.lower() in line_str.lower():
+                                    qty_match = re.search(r'(\d+)\s*[\d,]*\s*€', line_str)
+                                    qty = qty_match.group(1) if qty_match else "1"
+                                    item_str = f"{qty}× {pdf_item_key}"
+                                    if item_str not in room_consumption[current_room]:
+                                        room_consumption[current_room].append(item_str)
 
-        # Fallback default item for rooms inspected with water only if no items were parsed
+        # Fallback default item for inspected rooms with water only
         for r in room_consumption:
             if not room_consumption[r]:
                 room_consumption[r].append("1× Radisson Blu voda")
@@ -152,12 +169,8 @@ def parse_xml_logs(xml_bytes):
         return {}
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """
-    Reconciles PDF consumption against XML records using the PDF rooms as master list.
-    """
+    """Reconciles PDF consumption against XML records using PDF rooms as the master list."""
     audit_results = []
-    
-    # Sort rooms numerically based on the PDF inspection report
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     
     for room in discovered_rooms:
