@@ -63,51 +63,55 @@ with col2:
 
 def extract_pdf_consumption(uploaded_pdf):
     """
-    Parses multi-column Housekeeping PDF reports specifically matching 
-    room formats like '9 210', '9 701', '9 1008' while filtering out timestamps.
+    Parses multi-column Housekeeping PDF reports using layout preservation 
+    and column splitting to prevent cross-contamination between rooms.
     """
     room_consumption = defaultdict(list)
     try:
         full_text = ""
         with pdfplumber.open(uploaded_pdf) as pdf:
             for page in pdf.pages:
-                t = page.extract_text()
+                # layout=True maintains spatial spacing between side-by-side columns
+                t = page.extract_text(layout=True)
                 if t:
                     full_text += t + "\n"
         
         lines = full_text.split("\n")
-        current_rooms = []
+        current_room = None
         
         for line in lines:
-            line_str = line.strip()
+            line_str = line.rstrip()
             if not line_str:
                 continue
 
-            # Match Room Headers strictly formatted as '9 ' followed by 3 or 4 digits
-            room_matches = re.findall(r'\b9\s+(\d{3,4})\b', line_str)
+            # Split line into distinct columns by multiple spaces to isolate side-by-side rooms
+            columns = re.split(r'\s{2,}', line_str)
             
-            if room_matches:
-                current_rooms = room_matches
-                for r in current_rooms:
-                    if r not in room_consumption:
-                        room_consumption[r] = []
-                continue
+            for col in columns:
+                col = col.strip()
+                if not col:
+                    continue
+                
+                # Check for room header in this specific column
+                room_match = re.search(r'\b9\s+(\d{3,4})\b', col)
+                if room_match:
+                    current_room = room_match.group(1)
+                    if current_room not in room_consumption:
+                        room_consumption[current_room] = []
+                
+                # Check for minibar items in this column
+                matched_items = []
+                for pdf_item_key in MAPPING_DICT.keys():
+                    clean_key = pdf_item_key.split('/')[0].strip()
+                    if clean_key.lower() in col.lower():
+                        qty_match = re.search(r'(\d+)\s*[\d,]*\s*€', col)
+                        qty = qty_match.group(1) if qty_match else "1"
+                        matched_items.append(f"{qty}× {pdf_item_key}")
 
-            # Check if line contains a valid minibar item from MAPPING_DICT
-            matched_items = []
-            for pdf_item_key in MAPPING_DICT.keys():
-                clean_key = pdf_item_key.split('/')[0].strip()
-                if clean_key.lower() in line_str.lower():
-                    qty_match = re.search(r'(\d+)\s*[\d,]*\s*€', line_str)
-                    qty = qty_match.group(1) if qty_match else "1"
-                    matched_items.append(f"{qty}× {pdf_item_key}")
-
-            # Attach matched items to the currently active room(s)
-            if matched_items and current_rooms:
-                for r in current_rooms:
+                if matched_items and current_room:
                     for item in matched_items:
-                        if item not in room_consumption[r]:
-                            room_consumption[r].append(item)
+                        if item not in room_consumption[current_room]:
+                            room_consumption[current_room].append(item)
 
         cleaned_data = {r: items for r, items in room_consumption.items() if items}
         return cleaned_data if cleaned_data else room_consumption
