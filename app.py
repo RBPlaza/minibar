@@ -32,7 +32,7 @@ st.markdown("""
 st.title("🏨 Hotel Minibar Consumption & Payment Audit Tool (Dynamic)")
 st.markdown("Upload your housekeeping inspection PDF and Opera XML transaction logs to run automated reconciliation.")
 
-# Mapping Dictionary (PDF Name -> XML Name)
+# Standard Mapping Dictionary (PDF Term -> XML Term)
 MAPPING_DICT = {
     "Bombay Gin 0,05l / Gordons": "Minibar - Gin",
     "Jagermaister 0,02l": "Minibar - Jagermeister",
@@ -62,7 +62,10 @@ with col2:
     xml_file = st.file_uploader("2️⃣ Upload Opera XML Financial Log (.xml)", type=["xml"])
 
 def extract_pdf_consumption(uploaded_pdf):
-    """Extracts rooms and items consumed from the PDF inspection report."""
+    """
+    Parses multi-column Housekeeping PDF reports specifically matching 
+    room formats like '9 210', '9 701', '9 1008' while filtering out timestamps.
+    """
     room_consumption = defaultdict(list)
     try:
         full_text = ""
@@ -73,25 +76,42 @@ def extract_pdf_consumption(uploaded_pdf):
                     full_text += t + "\n"
         
         lines = full_text.split("\n")
-        current_room = None
+        current_rooms = []
         
         for line in lines:
-            line = line.strip()
-            # Match room headers (e.g., "Room 701" or "#701" or "701")
-            room_match = re.search(r'(?:Room\s*)?#?(\d{3,4})', line, re.IGNORECASE)
+            line_str = line.strip()
+            if not line_str:
+                continue
+
+            # Match Room Headers strictly formatted as '9 ' followed by 3 or 4 digits
+            room_matches = re.findall(r'\b9\s+(\d{3,4})\b', line_str)
             
-            # Check if line contains any known item descriptor
-            is_item = any(k.lower() in line.lower() for k in MAPPING_DICT.keys())
-            
-            if room_match and not is_item and len(line) < 15:
-                current_room = room_match.group(1)
-            elif current_room and line:
-                # Look for quantity and item text
-                qty_match = re.search(r'(\d+)[xXtimes\s]*(.*)', line)
-                if qty_match or is_item:
-                    room_consumption[current_room].append(line)
-                    
-        return room_consumption
+            if room_matches:
+                current_rooms = room_matches
+                for r in current_rooms:
+                    if r not in room_consumption:
+                        room_consumption[r] = []
+                continue
+
+            # Check if line contains a valid minibar item from MAPPING_DICT
+            matched_items = []
+            for pdf_item_key in MAPPING_DICT.keys():
+                clean_key = pdf_item_key.split('/')[0].strip()
+                if clean_key.lower() in line_str.lower():
+                    qty_match = re.search(r'(\d+)\s*[\d,]*\s*€', line_str)
+                    qty = qty_match.group(1) if qty_match else "1"
+                    matched_items.append(f"{qty}× {pdf_item_key}")
+
+            # Attach matched items to the currently active room(s)
+            if matched_items and current_rooms:
+                for r in current_rooms:
+                    for item in matched_items:
+                        if item not in room_consumption[r]:
+                            room_consumption[r].append(item)
+
+        cleaned_data = {r: items for r, items in room_consumption.items() if items}
+        return cleaned_data if cleaned_data else room_consumption
+
     except Exception as e:
         st.error(f"Error parsing PDF: {e}")
         return {}
@@ -123,7 +143,6 @@ def parse_xml_logs(xml_bytes):
                 if article:
                     xml_data[room_no]["items"].append(article)
                     
-                # Track routings or moves
                 if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
                     xml_data[room_no]["routings"].append(full_trx_text)
                     
@@ -136,13 +155,12 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
     """Dynamically reconciles PDF consumption against XML records."""
     audit_results = []
     
-    all_rooms = sorted(list(set(list(pdf_rooms.keys()) + list(xml_rooms.keys()))))
+    all_rooms = sorted(list(set(list(pdf_rooms.keys()) + list(xml_rooms.keys()))), key=lambda x: int(x) if x.isdigit() else 0)
     
     for room in all_rooms:
-        pdf_items = pdf_rooms.get(room, ["1x Radisson Blu voda"]) # Fallback if specific line missing
+        pdf_items = pdf_rooms.get(room, ["1x Radisson Blu voda"])
         xml_info = xml_rooms.get(room, {"items": [], "routings": [], "zeroed": False, "raw_text": ""})
         
-        # Check payment matching
         xml_text_blob = xml_info["raw_text"].upper()
         xml_item_count = len(xml_info["items"])
         pdf_item_count = len(pdf_items)
@@ -151,7 +169,6 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
         elif xml_item_count >= pdf_item_count or len(xml_info["routings"]) > 0 or "=>" in xml_text_blob:
-            # If items match or charges were routed/moved successfully
             status = "Paid"
             details = f"Matched {xml_item_count} transaction(s) in XML / Routed transactions verified."
         elif xml_item_count > 0:
