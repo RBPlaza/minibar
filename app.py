@@ -159,7 +159,6 @@ def parse_xml_logs(xml_bytes):
                 if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
                     xml_data[room_no]["routings"].append(full_trx_text)
                     
-        # Store global text reference for cross-room routing checks
         xml_data["_GLOBAL_TEXT_"] = global_xml_text
         return xml_data
     except Exception as e:
@@ -167,7 +166,7 @@ def parse_xml_logs(xml_bytes):
         return {}
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records, accounting for routings and room moves."""
+    """Reconciles PDF consumption against XML records, prioritizing routings and room moves over zero flags."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     global_xml_blob = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
@@ -178,20 +177,19 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         
         xml_text_blob = xml_info["raw_text"].upper()
         xml_item_count = len(xml_info["items"])
-        has_routing = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob
+        has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob
+        room_mentioned_in_routing = f"ROOM #{room}" in global_xml_blob or f"ROOM {room}" in global_xml_blob
         
-        # Check if this specific room's number appears in a routing string elsewhere in the XML (e.g. Routed from Room #703)
-        room_mentioned_in_routing = f"ROOM #{room}" in global_xml_blob or f"ROOM {room}" in global_xml_blob or room in global_xml_blob
-        
-        if xml_info["zeroed"]:
+        # Priority check: If a room move (=>) or routing exists, it is Paid (overrides zeroed flags)
+        if has_routing_or_move or room_mentioned_in_routing:
+            status = "Paid"
+            details = "Verified: Charges successfully routed or moved to another room/account according to XML log."
+        elif xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
-        elif xml_item_count > 0 or has_routing:
+        elif xml_item_count > 0:
             status = "Paid"
-            details = f"Verified: Found {xml_item_count} direct transaction(s) or local routing in XML log."
-        elif room_mentioned_in_routing:
-            status = "Paid"
-            details = f"Verified: Charges successfully routed / moved to another room according to XML log."
+            details = f"Verified: Found {xml_item_count} direct transaction(s) in XML log."
         else:
             status = "Unpaid"
             details = "No matching transaction or routing found in XML log."
