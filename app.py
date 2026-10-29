@@ -165,6 +165,42 @@ def parse_xml_logs(xml_bytes):
         st.error(f"Error parsing XML: {e}")
         return {}
 
+def get_member_vode_count(xml_bytes):
+    """Extracts total quantity of Radisson waters transferred or associated with room 9016."""
+    total_qty = 0
+    try:
+        root = ET.fromstring(xml_bytes)
+        for first in root.findall(".//FIRST"):
+            room_elem = first.find("FIRST")
+            room_no = room_elem.text.strip() if room_elem is not None and room_elem.text else ""
+            
+            for trx in first.findall(".//G_TRX_CHAR_DATE"):
+                desc = trx.find("ARTICLE_DESCRIPTION")
+                ref = trx.find("REFERENCE")
+                remark = trx.find("REMARK")
+                qty_elem = trx.find("QUANTITY")
+                
+                article = desc.text.strip() if desc is not None and desc.text else ""
+                reference = ref.text.strip() if ref is not None and ref.text else ""
+                rem_text = remark.text.strip() if remark is not None and remark.text else ""
+                
+                full_trx = f"{room_no} {article} {reference} {rem_text}".upper()
+                
+                is_radisson_water = "RADISSON" in article.upper() or "VODA" in article.upper() or "MINIBAR - RADISSON VODA" in article.upper()
+                is_target_room = room_no == "9016" or "9016" in full_trx
+                
+                if is_target_room and is_radisson_water:
+                    qty = 1
+                    if qty_elem is not None and qty_elem.text:
+                        try:
+                            qty = abs(int(float(qty_elem.text.strip())))
+                        except:
+                            pass
+                    total_qty += qty
+    except Exception:
+        pass
+    return total_qty
+
 def perform_reconciliation(pdf_rooms, xml_rooms):
     """Reconciles PDF consumption against XML records with precise routing and move checks."""
     audit_results = []
@@ -178,7 +214,6 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         xml_item_count = len(xml_info["items"])
         has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob
         
-        # Check if this specific room was routed or moved outward/inward explicitly using precise patterns
         global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
         explicit_routing_mention = f"#{room}=>" in global_text or f"ROOM #{room}" in global_text or (f"ROOM {room}" in global_text and "ROUTED" in global_text)
         
@@ -207,7 +242,8 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
 if pdf_file and xml_file:
     with st.spinner("Processing files and running dynamic reconciliation..."):
         pdf_rooms = extract_pdf_consumption(pdf_file)
-        xml_rooms = parse_xml_logs(xml_file.read())
+        xml_bytes = xml_file.read()
+        xml_rooms = parse_xml_logs(xml_bytes)
         audit_data = perform_reconciliation(pdf_rooms, xml_rooms)
 
     st.success("✅ Files successfully parsed and dynamically reconciled!")
@@ -272,6 +308,11 @@ if pdf_file and xml_file:
         file_name="minibar_audit_report_dynamic.csv",
         mime="text/csv",
     )
+
+    # Added requested member vode section at the bottom
+    member_vode_total = get_member_vode_count(xml_bytes)
+    st.markdown("---")
+    st.markdown(f"**Member vode: {member_vode_total}x**")
 
 elif pdf_file:
     st.info("ℹ️ PDF uploaded. Please upload your Opera XML log file above to run the automated audit.")
