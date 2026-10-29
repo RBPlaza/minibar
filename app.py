@@ -160,11 +160,14 @@ def parse_xml_logs(xml_bytes):
         return {}
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Dynamically reconciles PDF consumption against XML records for discovered rooms."""
+    """
+    Reconciles PDF consumption against XML records. 
+    Strictly audits ONLY the rooms present in the PDF inspection report.
+    """
     audit_results = []
     
-    # Dynamically sort all rooms discovered in the uploaded PDF
-    discovered_rooms = sorted(list(set(list(pdf_rooms.keys()) + list(xml_rooms.keys()))), key=lambda x: int(x) if x.isdigit() else 0)
+    # Strictly use rooms discovered in the PDF inspection report as the master list
+    discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     
     for room in discovered_rooms:
         pdf_items = pdf_rooms.get(room, ["1× Radisson Blu voda"])
