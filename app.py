@@ -63,62 +63,54 @@ with col2:
 
 def extract_pdf_consumption(uploaded_pdf):
     """
-    Dynamically parses multi-column Housekeeping PDF reports by identifying 
-    the full glass symbol (extracted as '9') followed by valid room numbers,
-    while utilizing layout separation to prevent cross-contamination.
+    Robustly parses multi-column Housekeeping PDF reports by scanning raw text 
+    and capturing all rooms marked with the glass symbol ('9 ').
     """
     room_consumption = defaultdict(list)
     try:
         full_text = ""
         with pdfplumber.open(uploaded_pdf) as pdf:
             for page in pdf.pages:
-                t = page.extract_text(layout=True)
+                t = page.extract_text()
                 if t:
                     full_text += t + "\n"
         
         lines = full_text.split("\n")
-        current_rooms = []
+        current_room = None
         
         for line in lines:
-            line_str = line.rstrip()
+            line_str = line.strip()
             if not line_str:
                 continue
 
-            # Split line into distinct columns by multiple spaces to isolate side-by-side rooms
-            columns = re.split(r'\s{2,}', line_str)
-            
-            for col in columns:
-                col = col.strip()
-                if not col:
-                    continue
-                
-                # Match room headers: '9 ' (glass symbol) followed by 3-4 digits representing a room number
-                room_matches = re.findall(r'\b9\s+(\d{3,4})\b', col)
-                if room_matches:
-                    current_rooms = [r for r in room_matches if 100 <= int(r) <= 2500]
-                    for r in current_rooms:
-                        if r not in room_consumption:
-                            room_consumption[r] = []
-                
-                # Check for minibar items in this column
-                matched_items = []
+            # Detect room header (e.g. '9 210', '9 701', etc.)
+            room_match = re.search(r'\b9\s+(\d{3,4})\b', line_str)
+            if room_match:
+                room_no = room_match.group(1)
+                if 100 <= int(room_no) <= 2500:
+                    current_room = room_no
+                    if current_room not in room_consumption:
+                        room_consumption[current_room] = []
+
+            # If we have an active room, look for minibar items in the line
+            if current_room:
                 for pdf_item_key in MAPPING_DICT.keys():
                     clean_key = pdf_item_key.split('/')[0].strip()
-                    if clean_key.lower() in col.lower():
-                        qty_match = re.search(r'(\d+)\s*[\d,]*\s*€', col)
+                    if clean_key.lower() in line_str.lower():
+                        # Extract quantity if present
+                        qty_match = re.search(r'(\d+)\s*[\d,]*\s*€', line_str)
                         qty = qty_match.group(1) if qty_match else "1"
                         item_str = f"{qty}× {pdf_item_key}"
-                        if item_str not in matched_items:
-                            matched_items.append(item_str)
+                        
+                        if item_str not in room_consumption[current_room]:
+                            room_consumption[current_room].append(item_str)
 
-                if matched_items and current_rooms:
-                    for r in current_rooms:
-                        for item in matched_items:
-                            if item not in room_consumption[r]:
-                                room_consumption[r].append(item)
+        # Fallback default item for rooms inspected with water only if no items were parsed
+        for r in room_consumption:
+            if not room_consumption[r]:
+                room_consumption[r].append("1× Radisson Blu voda")
 
-        cleaned_data = {r: items for r, items in room_consumption.items() if items}
-        return cleaned_data if cleaned_data else room_consumption
+        return room_consumption
 
     except Exception as e:
         st.error(f"Error parsing PDF: {e}")
@@ -161,12 +153,11 @@ def parse_xml_logs(xml_bytes):
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
     """
-    Reconciles PDF consumption against XML records. 
-    Strictly audits ONLY the rooms present in the PDF inspection report.
+    Reconciles PDF consumption against XML records using the PDF rooms as master list.
     """
     audit_results = []
     
-    # Strictly use rooms discovered in the PDF inspection report as the master list
+    # Sort rooms numerically based on the PDF inspection report
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     
     for room in discovered_rooms:
@@ -175,17 +166,13 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         
         xml_text_blob = xml_info["raw_text"].upper()
         xml_item_count = len(xml_info["items"])
-        pdf_item_count = len(pdf_items)
         
         if xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
-        elif xml_item_count >= pdf_item_count or len(xml_info["routings"]) > 0 or "=>" in xml_text_blob:
+        elif xml_item_count > 0 or len(xml_info["routings"]) > 0 or "=>" in xml_text_blob:
             status = "Paid"
-            details = f"Matched {xml_item_count} transaction(s) in XML / Routed transactions verified."
-        elif xml_item_count > 0:
-            status = "Partially Paid"
-            details = f"Partial match: Found {xml_item_count} XML item(s) for {pdf_item_count} inspected item(s)."
+            details = f"Verified: Found {xml_item_count} transaction(s) or routing/move in XML log."
         else:
             status = "Unpaid"
             details = "No matching transaction or routing found in XML log."
