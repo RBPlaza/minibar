@@ -129,7 +129,7 @@ def extract_pdf_consumption(uploaded_pdf):
 
 def parse_xml_logs(xml_bytes):
     """Parses Opera XML to extract room charges, routings, moves, and remarks globally."""
-    xml_data = defaultdict(lambda: {"items": [], "routings": [], "zeroed": False, "raw_text": ""})
+    xml_data = defaultdict(lambda: {"items": [], "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
     global_xml_text = ""
     try:
         root = ET.fromstring(xml_bytes)
@@ -158,6 +158,10 @@ def parse_xml_logs(xml_bytes):
                     
                 if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
                     xml_data[room_no]["routings"].append(full_trx_text)
+                    # Extract target room destination if specified after =>
+                    dest_match = re.search(r'=>\s*(?:[A-Z\s]+)?#?(\d{3,4})', full_trx_text)
+                    if dest_match:
+                        xml_data[room_no]["target_rooms"].add(dest_match.group(1))
                     
         xml_data["_GLOBAL_TEXT_"] = global_xml_text
         return xml_data
@@ -181,7 +185,7 @@ def get_member_vode_count(xml_bytes):
                 qty_elem = trx.find("QUANTITY")
                 
                 article = desc.text.strip() if desc is not None and desc.text else ""
-                reference = ref.text.strip() if ref is not None and ref.text else ""
+                reference = ref.text.strip() if reference is not None and reference.text else ""
                 rem_text = remark.text.strip() if remark is not None and remark.text else ""
                 
                 full_trx = f"{room_no} {article} {reference} {rem_text}".upper()
@@ -202,41 +206,68 @@ def get_member_vode_count(xml_bytes):
     return total_qty
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records with precise routing, move, and partial payment checks."""
+    """Reconciles PDF consumption against XML records with explicit routing destinations and item matching."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
+    global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
     
     for room in discovered_rooms:
         pdf_items = pdf_rooms.get(room, ["1× Radisson Blu voda"])
-        xml_info = xml_rooms.get(room, {"items": [], "routings": [], "zeroed": False, "raw_text": ""})
+        xml_info = xml_rooms.get(room, {"items": [], "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
         
         xml_text_blob = xml_info["raw_text"].upper()
+        xml_items_desc = " ".join(xml_info["items"]).upper()
         xml_item_count = len(xml_info["items"])
         pdf_item_count = len(pdf_items)
         has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob
         
-        global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
         explicit_routing_mention = f"#{room}=>" in global_text or f"ROOM #{room}" in global_text or (f"ROOM {room}" in global_text and "ROUTED" in global_text)
         
+        # Determine specific destination room if routed/moved
+        target_dest = ", ".join(xml_info["target_rooms"]) if xml_info["target_rooms"] else ""
+        
+        # Build item-level validation markers for display
+        validated_articles = []
+        matched_count = 0
+        for item in pdf_items:
+            item_core = item.split("×")[-1].strip().split("/")[0].strip().upper()
+            # Check if this specific item or equivalent mapping term exists in XML items for this room
+            matched = False
+            for xml_item in xml_info["items"]:
+                if item_core in xml_item.upper() or xml_item.upper() in item_core or any(term in xml_item.upper() for term in item_core.split()):
+                    matched = True
+                    break
+            
+            # If room was fully routed out, consider items accounted for under destination
+            if has_routing_or_move or explicit_routing_mention:
+                matched = True
+
+            if matched:
+                validated_articles.append(f"✅ {item}")
+                matched_count += 1
+            else:
+                validated_articles.append(f"❌ {item}")
+
         if has_routing_or_move or explicit_routing_mention:
             status = "Paid"
-            details = "Verified: Charges successfully routed or moved to another room/account according to XML log."
+            dest_str = f" to Room {target_dest}" if target_dest else ""
+            details = f"Verified: Charges successfully routed or moved{dest_str} according to XML log."
         elif xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
-        elif xml_item_count >= pdf_item_count:
+        elif matched_count >= pdf_item_count or xml_item_count >= pdf_item_count:
             status = "Paid"
-            details = f"Verified: Found all {xml_item_count} expected transaction(s) in XML log."
-        elif xml_item_count > 0:
+            details = f"Verified: Found all expected transaction(s) in XML log."
+        elif matched_count > 0 or xml_item_count > 0:
             status = "Partially Paid"
-            details = f"Partial match: Found {xml_item_count} XML item(s) for {pdf_item_count} inspected item(s)."
+            details = f"Partial match: Found {xml_item_count} XML transaction(s) for {pdf_item_count} inspected item(s)."
         else:
             status = "Unpaid"
             details = "No matching transaction or routing found in XML log."
             
         audit_results.append({
             "Room Number": room,
-            "Articles": pdf_items,
+            "Articles": validated_articles,
             "Status": status,
             "Details": details
         })
@@ -275,7 +306,7 @@ if pdf_file and xml_file:
         status = row["Status"]
         badge_class = "badge-paid" if status == "Paid" else ("badge-partial" if status == "Partially Paid" else "badge-unpaid")
         
-        articles_html = "".join([f"<div class='article-item'>• {art}</div>" for art in row["Articles"]])
+        articles_html = "".join([f"<div class='article-item'>{art}</div>" for art in row["Articles"]])
         
         card_html = f"""
         <div class="audit-card">
@@ -313,7 +344,7 @@ if pdf_file and xml_file:
         mime="text/csv",
     )
 
-    # Added requested member vode section at the bottom
+    # Member vode section at the bottom
     member_vode_total = get_member_vode_count(xml_bytes)
     st.markdown("---")
     st.markdown(f"**Member vode: {member_vode_total}x**")
