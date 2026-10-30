@@ -202,7 +202,7 @@ def get_member_vode_count(xml_bytes):
     return total_qty
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records with precise routing and move checks."""
+    """Reconciles PDF consumption against XML records with precise routing, move, and partial payment checks."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     
@@ -212,6 +212,7 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         
         xml_text_blob = xml_info["raw_text"].upper()
         xml_item_count = len(xml_info["items"])
+        pdf_item_count = len(pdf_items)
         has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob
         
         global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
@@ -223,9 +224,12 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         elif xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
-        elif xml_item_count > 0:
+        elif xml_item_count >= pdf_item_count:
             status = "Paid"
-            details = f"Verified: Found {xml_item_count} direct transaction(s) in XML log."
+            details = f"Verified: Found all {xml_item_count} expected transaction(s) in XML log."
+        elif xml_item_count > 0:
+            status = "Partially Paid"
+            details = f"Partial match: Found {xml_item_count} XML item(s) for {pdf_item_count} inspected item(s)."
         else:
             status = "Unpaid"
             details = "No matching transaction or routing found in XML log."
