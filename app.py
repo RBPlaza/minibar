@@ -3,6 +3,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 import pdfplumber
 import re
+import unicodedata
 from collections import defaultdict
 
 st.set_page_config(
@@ -60,6 +61,13 @@ with col1:
     pdf_file = st.file_uploader("1️⃣ Upload Housekeeping Inspection PDF (.pdf)", type=["pdf"])
 with col2:
     xml_file = st.file_uploader("2️⃣ Upload Opera XML Financial Log (.xml)", type=["xml"])
+
+def clean_text(text):
+    """Normalizes text for robust matching across character encodings."""
+    if not text:
+        return ""
+    text = unicodedata.normalize('NFD', text).encode('ascii', 'ignore').decode('utf-8')
+    return re.sub(r'[^a-zA-Z0-9\s]', '', text).lower().strip()
 
 def extract_pdf_consumption(uploaded_pdf):
     """
@@ -158,7 +166,6 @@ def parse_xml_logs(xml_bytes):
                     
                 if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
                     xml_data[room_no]["routings"].append(full_trx_text)
-                    # Extract target room destination if specified after =>
                     dest_match = re.search(r'=>\s*(?:[A-Z\s]+)?#?(\d{3,4})', full_trx_text)
                     if dest_match:
                         xml_data[room_no]["target_rooms"].add(dest_match.group(1))
@@ -185,7 +192,7 @@ def get_member_vode_count(xml_bytes):
                 qty_elem = trx.find("QUANTITY")
                 
                 article = desc.text.strip() if desc is not None and desc.text else ""
-                reference = ref.text.strip() if reference is not None and reference.text else ""
+                reference = ref.text.strip() if ref is not None and ref.text else ""
                 rem_text = remark.text.strip() if remark is not None and remark.text else ""
                 
                 full_trx = f"{room_no} {article} {reference} {rem_text}".upper()
@@ -206,7 +213,7 @@ def get_member_vode_count(xml_bytes):
     return total_qty
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records with explicit routing destinations and item matching."""
+    """Reconciles PDF consumption against XML records with robust item mapping."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
@@ -216,29 +223,32 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         xml_info = xml_rooms.get(room, {"items": [], "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
         
         xml_text_blob = xml_info["raw_text"].upper()
-        xml_items_desc = " ".join(xml_info["items"]).upper()
-        xml_item_count = len(xml_info["items"])
+        xml_items_cleaned = [clean_text(item) for item in xml_info["items"]]
         pdf_item_count = len(pdf_items)
         has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob
         
         explicit_routing_mention = f"#{room}=>" in global_text or f"ROOM #{room}" in global_text or (f"ROOM {room}" in global_text and "ROUTED" in global_text)
         
-        # Determine specific destination room if routed/moved
         target_dest = ", ".join(xml_info["target_rooms"]) if xml_info["target_rooms"] else ""
         
-        # Build item-level validation markers for display
         validated_articles = []
         matched_count = 0
+        
         for item in pdf_items:
-            item_core = item.split("×")[-1].strip().split("/")[0].strip().upper()
-            # Check if this specific item or equivalent mapping term exists in XML items for this room
+            # Extract core name from PDF item
+            raw_pdf_name = item.split("×")[-1].strip()
+            xml_equivalent = MAPPING_DICT.get(raw_pdf_name, raw_pdf_name)
+            
+            clean_pdf_term = clean_text(raw_pdf_name)
+            clean_xml_eq = clean_text(xml_equivalent)
+            
             matched = False
-            for xml_item in xml_info["items"]:
-                if item_core in xml_item.upper() or xml_item.upper() in item_core or any(term in xml_item.upper() for term in item_core.split()):
+            for xml_item in xml_items_cleaned:
+                # Match against cleaned equivalent or core terms
+                if clean_xml_eq in xml_item or xml_item in clean_xml_eq or clean_pdf_term in xml_item:
                     matched = True
                     break
             
-            # If room was fully routed out, consider items accounted for under destination
             if has_routing_or_move or explicit_routing_mention:
                 matched = True
 
@@ -255,12 +265,12 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         elif xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
-        elif matched_count >= pdf_item_count or xml_item_count >= pdf_item_count:
+        elif matched_count == pdf_item_count:
             status = "Paid"
-            details = f"Verified: Found all expected transaction(s) in XML log."
-        elif matched_count > 0 or xml_item_count > 0:
+            details = f"Verified: Found all {matched_count} expected item(s) in XML log."
+        elif matched_count > 0:
             status = "Partially Paid"
-            details = f"Partial match: Found {xml_item_count} XML transaction(s) for {pdf_item_count} inspected item(s)."
+            details = f"Partial match: Paid for {matched_count} of {pdf_item_count} inspected item(s)."
         else:
             status = "Unpaid"
             details = "No matching transaction or routing found in XML log."
