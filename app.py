@@ -137,8 +137,8 @@ def extract_pdf_consumption(uploaded_pdf):
         return {}
 
 def parse_xml_logs(xml_bytes):
-    """Parses Opera XML to extract room charges, routings, moves, and global cross-references."""
-    xml_data = defaultdict(lambda: {"items": [], "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
+    """Parses Opera XML to extract room charges, quantities, routings, and global cross-references."""
+    xml_data = defaultdict(lambda: {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
     global_xml_text = ""
     try:
         root = ET.fromstring(xml_bytes)
@@ -150,10 +150,18 @@ def parse_xml_logs(xml_bytes):
                 desc = trx.find("ARTICLE_DESCRIPTION")
                 ref = trx.find("REFERENCE")
                 remark = trx.find("REMARK")
+                qty_elem = trx.find("QUANTITY")
                 
                 article = desc.text.strip() if desc is not None and desc.text else ""
                 reference = ref.text.strip() if ref is not None and ref.text else ""
                 rem_text = remark.text.strip() if remark is not None and remark.text else ""
+                
+                qty = 1
+                if qty_elem is not None and qty_elem.text:
+                    try:
+                        qty = abs(int(float(qty_elem.text.strip())))
+                    except:
+                        pass
                 
                 full_trx_text = f"{article} {reference} {rem_text}"
                 xml_data[room_no]["raw_text"] += " " + full_trx_text
@@ -163,7 +171,8 @@ def parse_xml_logs(xml_bytes):
                     xml_data[room_no]["zeroed"] = True
                 
                 if article:
-                    xml_data[room_no]["items"].append(article)
+                    xml_data[room_no]["items"].append((article, qty))
+                    xml_data[room_no]["total_qty"] += qty
                     
                 if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
                     xml_data[room_no]["routings"].append(full_trx_text)
@@ -219,19 +228,25 @@ def get_member_vode_count(xml_bytes):
     return total_qty
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records including overpaid checks."""
+    """Reconciles PDF consumption against XML records using precise quantity sums for overpaid checks."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
     
     for room in discovered_rooms:
         pdf_items = pdf_rooms.get(room, ["1× Radisson Blu voda"])
-        xml_info = xml_rooms.get(room, {"items": [], "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
+        xml_info = xml_rooms.get(room, {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
         
         xml_text_blob = xml_info["raw_text"].upper()
-        xml_items_cleaned = [clean_text(item) for item in xml_info["items"]]
-        pdf_item_count = len(pdf_items)
-        xml_item_count = len(xml_info["items"])
+        xml_items_cleaned = [(clean_text(item[0]), item[1]) for item in xml_info["items"]]
+        
+        # Calculate total PDF quantity requested
+        pdf_total_qty = 0
+        for item in pdf_items:
+            q_match = re.search(r'^(\d+)\s*×', item)
+            pdf_total_qty += int(q_match.group(1)) if q_match else 1
+            
+        xml_total_qty = xml_info["total_qty"]
         
         room_routing_pattern = re.compile(rf'#?\b{room}\b\s*=>\s*(?:[A-Z\s,]+)?#?(\d{{3,4}})', re.IGNORECASE)
         found_routings = room_routing_pattern.findall(global_text)
@@ -254,7 +269,7 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             clean_xml_eq = clean_text(xml_equivalent)
             
             matched = False
-            for xml_item in xml_items_cleaned:
+            for xml_item, _ in xml_items_cleaned:
                 if clean_xml_eq in xml_item or xml_item in clean_xml_eq or clean_pdf_term in xml_item:
                     matched = True
                     break
@@ -268,12 +283,12 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             else:
                 validated_articles.append(f"❌ {item}")
 
-        # Check for overpaid condition (more XML charges than inspected items on PDF)
-        is_overpaid = xml_item_count > pdf_item_count and not (has_routing_or_move or explicit_routing_mention)
+        # Check for overpaid condition based on summed quantities
+        is_overpaid = xml_total_qty > pdf_total_qty and not (has_routing_or_move or explicit_routing_mention)
 
         if is_overpaid:
             status = "Overpaid"
-            details = f"Overpaid alert: Found {xml_item_count} XML transaction(s) for only {pdf_item_count} inspected item(s) on PDF."
+            details = f"Overpaid alert: XML total quantity ({xml_total_qty}) exceeds PDF inspected quantity ({pdf_total_qty})."
         elif has_routing_or_move or explicit_routing_mention or target_dest:
             status = "Paid"
             dest_str = f" to Room {target_dest}" if target_dest else ""
@@ -281,12 +296,12 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         elif xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
-        elif matched_count == pdf_item_count:
+        elif matched_count == len(pdf_items):
             status = "Paid"
-            details = f"Verified: Found all {matched_count} expected item(s) in XML log."
+            details = f"Verified: Found all expected item(s) in XML log."
         elif matched_count > 0:
             status = "Partially Paid"
-            details = f"Partial match: Paid for {matched_count} of {pdf_item_count} inspected item(s)."
+            details = f"Partial match: Paid for {matched_count} of {len(pdf_items)} inspected item type(s)."
         else:
             status = "Unpaid"
             details = "No matching transaction or routing found in XML log."
