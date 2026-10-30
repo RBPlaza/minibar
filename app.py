@@ -26,6 +26,7 @@ st.markdown("""
     .badge-paid { background-color: #d4edda; color: #155724; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
     .badge-partial { background-color: #fff3cd; color: #856404; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
     .badge-unpaid { background-color: #f8d7da; color: #721c24; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
+    .badge-overpaid { background-color: #e2d9f3; color: #4a235a; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
     .article-item { margin: 3px 0; font-family: monospace; color: #333; }
     </style>
 """, unsafe_allow_html=True)
@@ -166,7 +167,6 @@ def parse_xml_logs(xml_bytes):
                     
                 if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
                     xml_data[room_no]["routings"].append(full_trx_text)
-                    # Extract source and destination rooms from routing strings like "#1211=>...#9016"
                     source_match = re.search(r'#?(\d{3,4})\s*=>', full_trx_text)
                     dest_match = re.search(r'=>\s*(?:[A-Z\s]+)?#?(\d{3,4})', full_trx_text)
                     if source_match:
@@ -219,7 +219,7 @@ def get_member_vode_count(xml_bytes):
     return total_qty
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records with precise routing destination mapping and item checks."""
+    """Reconciles PDF consumption against XML records including overpaid checks."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
@@ -231,8 +231,8 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         xml_text_blob = xml_info["raw_text"].upper()
         xml_items_cleaned = [clean_text(item) for item in xml_info["items"]]
         pdf_item_count = len(pdf_items)
+        xml_item_count = len(xml_info["items"])
         
-        # Search global text for explicit routings originating from this room (e.g. #1211=>...#9016)
         room_routing_pattern = re.compile(rf'#?\b{room}\b\s*=>\s*(?:[A-Z\s,]+)?#?(\d{{3,4}})', re.IGNORECASE)
         found_routings = room_routing_pattern.findall(global_text)
         target_rooms_set = set(xml_info["target_rooms"])
@@ -254,13 +254,11 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             clean_xml_eq = clean_text(xml_equivalent)
             
             matched = False
-            # 1. Check direct room XML items
             for xml_item in xml_items_cleaned:
                 if clean_xml_eq in xml_item or xml_item in clean_xml_eq or clean_pdf_term in xml_item:
                     matched = True
                     break
             
-            # 2. If water/voda was routed out to another room, mark water items as matched
             if not matched and target_dest and ("voda" in clean_pdf_term or "water" in clean_xml_eq or "radisson" in clean_pdf_term):
                 matched = True
 
@@ -270,7 +268,13 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             else:
                 validated_articles.append(f"❌ {item}")
 
-        if has_routing_or_move or explicit_routing_mention or target_dest:
+        # Check for overpaid condition (more XML charges than inspected items on PDF)
+        is_overpaid = xml_item_count > pdf_item_count and not (has_routing_or_move or explicit_routing_mention)
+
+        if is_overpaid:
+            status = "Overpaid"
+            details = f"Overpaid alert: Found {xml_item_count} XML transaction(s) for only {pdf_item_count} inspected item(s) on PDF."
+        elif has_routing_or_move or explicit_routing_mention or target_dest:
             status = "Paid"
             dest_str = f" to Room {target_dest}" if target_dest else ""
             details = f"Verified: Charges successfully routed or moved{dest_str} according to XML log."
@@ -309,28 +313,45 @@ if pdf_file and xml_file:
     total_rooms = len(audit_data)
     paid_count = len([r for r in audit_data if r["Status"] == "Paid"])
     partial_count = len([r for r in audit_data if r["Status"] == "Partially Paid"])
+    overpaid_count = len([r for r in audit_data if r["Status"] == "Overpaid"])
     unpaid_count = len([r for r in audit_data if r["Status"] == "Unpaid"])
 
     st.markdown("### 📊 Audit Summary")
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Total Rooms Audited", total_rooms)
     m2.metric("Fully Paid", paid_count)
     m3.metric("Partially Paid", partial_count)
-    m4.metric("Unpaid / Zero", unpaid_count)
+    m4.metric("Overpaid", overpaid_count)
+    m5.metric("Unpaid / Zero", unpaid_count)
 
     # Filter controls
-    status_filter = st.selectbox("Filter by Payment Status:", ["All", "Paid", "Partially Paid", "Unpaid"])
+    status_filter = st.selectbox("Filter by Payment Status:", ["All", "Paid", "Partially Paid", "Overpaid", "Unpaid"])
     filtered_data = audit_data if status_filter == "All" else [r for r in audit_data if r["Status"] == status_filter]
 
     st.markdown("### 🗂️ Room-by-Room Audit Results")
 
     for row in filtered_data:
         status = row["Status"]
-        badge_class = "badge-paid" if status == "Paid" else ("badge-partial" if status == "Partially Paid" else "badge-unpaid")
+        if status == "Paid":
+            badge_class = "badge-paid"
+        elif status == "Partially Paid":
+            badge_class = "badge-partial"
+        elif status == "Overpaid":
+            badge_class = "badge-overpaid"
+        else:
+            badge_class = "badge-unpaid"
         
         articles_html = "".join([f"<div class='article-item'>{art}</div>" for art in row["Articles"]])
         
         card_html = f"""
+        .audit-card {{
+            background-color: #ffffff;
+            border: 1px solid #e0e0e0;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }}
         <div class="audit-card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                 <b style="font-size: 1.1em;">Room {row['Room Number']}</b>
