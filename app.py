@@ -136,7 +136,7 @@ def extract_pdf_consumption(uploaded_pdf):
         return {}
 
 def parse_xml_logs(xml_bytes):
-    """Parses Opera XML to extract room charges, routings, moves, and remarks globally."""
+    """Parses Opera XML to extract room charges, routings, moves, and global cross-references."""
     xml_data = defaultdict(lambda: {"items": [], "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
     global_xml_text = ""
     try:
@@ -166,9 +166,15 @@ def parse_xml_logs(xml_bytes):
                     
                 if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
                     xml_data[room_no]["routings"].append(full_trx_text)
+                    # Extract source and destination rooms from routing strings like "#1211=>...#9016"
+                    source_match = re.search(r'#?(\d{3,4})\s*=>', full_trx_text)
                     dest_match = re.search(r'=>\s*(?:[A-Z\s]+)?#?(\d{3,4})', full_trx_text)
-                    if dest_match:
-                        xml_data[room_no]["target_rooms"].add(dest_match.group(1))
+                    if source_match:
+                        src_room = source_match.group(1)
+                        if dest_match:
+                            dst_room = dest_match.group(1)
+                            xml_data[src_room]["target_rooms"].add(dst_room)
+                            xml_data[src_room]["routings"].append(full_trx_text)
                     
         xml_data["_GLOBAL_TEXT_"] = global_xml_text
         return xml_data
@@ -213,7 +219,7 @@ def get_member_vode_count(xml_bytes):
     return total_qty
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records with robust item mapping."""
+    """Reconciles PDF consumption against XML records with precise routing destination mapping and item checks."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
@@ -225,17 +231,22 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         xml_text_blob = xml_info["raw_text"].upper()
         xml_items_cleaned = [clean_text(item) for item in xml_info["items"]]
         pdf_item_count = len(pdf_items)
-        has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob
         
-        explicit_routing_mention = f"#{room}=>" in global_text or f"ROOM #{room}" in global_text or (f"ROOM {room}" in global_text and "ROUTED" in global_text)
-        
-        target_dest = ", ".join(xml_info["target_rooms"]) if xml_info["target_rooms"] else ""
+        # Search global text for explicit routings originating from this room (e.g. #1211=>...#9016)
+        room_routing_pattern = re.compile(rf'#?\b{room}\b\s*=>\s*(?:[A-Z\s,]+)?#?(\d{{3,4}})', re.IGNORECASE)
+        found_routings = room_routing_pattern.findall(global_text)
+        target_rooms_set = set(xml_info["target_rooms"])
+        for r_match in found_routings:
+            target_rooms_set.add(r_match)
+            
+        has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob or len(found_routings) > 0
+        target_dest = ", ".join(target_rooms_set) if target_rooms_set else ""
+        explicit_routing_mention = f"#{room}=>" in global_text or f"ROOM #{room}" in global_text or len(found_routings) > 0
         
         validated_articles = []
         matched_count = 0
         
         for item in pdf_items:
-            # Extract core name from PDF item
             raw_pdf_name = item.split("×")[-1].strip()
             xml_equivalent = MAPPING_DICT.get(raw_pdf_name, raw_pdf_name)
             
@@ -243,13 +254,14 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             clean_xml_eq = clean_text(xml_equivalent)
             
             matched = False
+            # 1. Check direct room XML items
             for xml_item in xml_items_cleaned:
-                # Match against cleaned equivalent or core terms
                 if clean_xml_eq in xml_item or xml_item in clean_xml_eq or clean_pdf_term in xml_item:
                     matched = True
                     break
             
-            if has_routing_or_move or explicit_routing_mention:
+            # 2. If water/voda was routed out to another room, mark water items as matched
+            if not matched and target_dest and ("voda" in clean_pdf_term or "water" in clean_xml_eq or "radisson" in clean_pdf_term):
                 matched = True
 
             if matched:
@@ -258,7 +270,7 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             else:
                 validated_articles.append(f"❌ {item}")
 
-        if has_routing_or_move or explicit_routing_mention:
+        if has_routing_or_move or explicit_routing_mention or target_dest:
             status = "Paid"
             dest_str = f" to Room {target_dest}" if target_dest else ""
             details = f"Verified: Charges successfully routed or moved{dest_str} according to XML log."
