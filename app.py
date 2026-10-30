@@ -344,14 +344,6 @@ if pdf_file and xml_file:
         articles_html = "".join([f"<div class='article-item'>{art}</div>" for art in row["Articles"]])
         
         card_html = f"""
-        .audit-card {{
-            background-color: #ffffff;
-            border: 1px solid #e0e0e0;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 12px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        }}
         <div class="audit-card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                 <b style="font-size: 1.1em;">Room {row['Room Number']}</b>
