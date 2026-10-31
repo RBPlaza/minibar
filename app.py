@@ -146,11 +146,13 @@ def parse_xml_logs(xml_bytes):
                 desc = trx.find("ARTICLE_DESCRIPTION")
                 ref = trx.find("REFERENCE")
                 remark = trx.find("REMARK")
+                cc_supp = trx.find("CREDIT_CARD_SUPPLEMENT")
                 qty_elem = trx.find("QUANTITY")
                 
                 article = desc.text.strip() if desc is not None and desc.text else ""
                 reference = ref.text.strip() if ref is not None and ref.text else ""
                 rem_text = remark.text.strip() if remark is not None and remark.text else ""
+                cc_text = cc_supp.text.strip() if cc_supp is not None and cc_supp.text else ""
                 
                 qty = 1
                 if qty_elem is not None and qty_elem.text:
@@ -159,7 +161,7 @@ def parse_xml_logs(xml_bytes):
                     except:
                         pass
                 
-                full_trx_text = f"{article} {reference} {rem_text}"
+                full_trx_text = f"{article} {reference} {rem_text} {cc_text}"
                 xml_data[room_no]["raw_text"] += " " + full_trx_text
                 global_xml_text += " " + full_trx_text
                 
@@ -170,6 +172,13 @@ def parse_xml_logs(xml_bytes):
                     xml_data[room_no]["items"].append((article, qty))
                     xml_data[room_no]["total_qty"] += qty
                     
+                # Check for routing or manual supplement room references (e.g., "poraba iz 802")
+                combined_source_check = f"{reference} {rem_text} {cc_text}"
+                room_ref_match = re.search(r'(?:iz|from)\s*#?(\d{3,4})', combined_source_check, re.IGNORECASE)
+                if room_ref_match:
+                    origin_room = room_ref_match.group(1)
+                    xml_data[origin_room]["incoming_routings"].append((room_no, full_trx_text))
+                
                 if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
                     xml_data[room_no]["routings"].append(full_trx_text)
                     source_match = re.search(r'#?(\d{3,4})\s*=>', full_trx_text)
@@ -206,13 +215,15 @@ def get_member_vode_count(xml_bytes):
                 desc = trx.find("ARTICLE_DESCRIPTION")
                 ref = trx.find("REFERENCE")
                 remark = trx.find("REMARK")
+                cc_supp = trx.find("CREDIT_CARD_SUPPLEMENT")
                 qty_elem = trx.find("QUANTITY")
                 
                 article = desc.text.strip() if desc is not None and desc.text else ""
                 reference = ref.text.strip() if ref is not None and ref.text else ""
                 rem_text = remark.text.strip() if remark is not None and remark.text else ""
+                cc_text = cc_supp.text.strip() if cc_supp is not None and cc_supp.text else ""
                 
-                full_trx = f"{room_no} {article} {reference} {rem_text}".upper()
+                full_trx = f"{room_no} {article} {reference} {rem_text} {cc_text}".upper()
                 
                 is_radisson_water = "RADISSON" in article.upper() or "VODA" in article.upper() or "MINIBAR - RADISSON VODA" in article.upper()
                 is_target_room = room_no == "9016" or "9016" in full_trx
@@ -460,7 +471,7 @@ if pdf_file and xml_file:
     declined_str = ", ".join(sorted(declined_rooms, key=lambda x: int(x) if x.isdigit() else 0))
     nocc_str = ", ".join(sorted(nocc_rooms, key=lambda x: int(x) if x.isdigit() else 0))
 
-    # Member vode section & internal notes footer at the bottom (without asterisks)
+    # Member vode section & internal notes footer at the bottom
     member_vode_total = get_member_vode_count(xml_bytes)
     st.markdown("---")
     st.markdown(f"**Member vode: {member_vode_total}x**")
