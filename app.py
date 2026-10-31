@@ -398,8 +398,8 @@ if pdf_file and xml_file:
         
         articles_html = "".join([f"<div class='article-item'>{art}</div>" for art in row["Articles"]])
         
-        # We use columns inside the card layout or right below details for the internal note selectbox if status != Paid
-        col_card1, col_card2 = st.columns([2, 1])
+        # Changed columns ratio from [2, 1] to [3, 1] to make the selectbox column 50% narrower
+        col_card1, col_card2 = st.columns([3, 1])
         
         with col_card1:
             card_html = f"""
@@ -428,14 +428,14 @@ if pdf_file and xml_file:
                 current_note = st.session_state.internal_notes.get(room_no, "— Select Note —")
                 note_options = ["— Select Note —", "Paid", "Declined", "no CC"]
                 selected_note = st.selectbox(
-                    f"Internal Note (Room {room_no})",
+                    f"Note (Room {room_no})",
                     note_options,
                     index=note_options.index(current_note) if current_note in note_options else 0,
                     key=f"note_{room_no}"
                 )
                 st.session_state.internal_notes[room_no] = selected_note
             else:
-                st.markdown("<span style='color: green; font-size: 0.85em;'>✔ Automatically Paid</span>", unsafe_allow_html=True)
+                st.markdown("<span style='color: green; font-size: 0.85em;'>✔ Paid</span>", unsafe_allow_html=True)
 
     # CSV Export
     df_export = pd.DataFrame([{
