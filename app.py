@@ -72,10 +72,6 @@ def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9\s]', '', text).lower().strip()
 
 def extract_pdf_consumption(uploaded_pdf):
-    """
-    Parses Flexkeeping 2-column grid PDFs by splitting words into independent 
-    left and right coordinate columns, sorting each top-to-bottom.
-    """
     room_consumption = defaultdict(list)
     try:
         with pdfplumber.open(uploaded_pdf) as pdf:
@@ -138,7 +134,6 @@ def extract_pdf_consumption(uploaded_pdf):
         return {}
 
 def parse_xml_logs(xml_bytes):
-    """Parses Opera XML to extract room charges, quantities, routings, and global cross-references."""
     xml_data = defaultdict(lambda: {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set(), "incoming_routings": []})
     global_xml_text = ""
     try:
@@ -200,7 +195,6 @@ def parse_xml_logs(xml_bytes):
         return {}
 
 def get_member_vode_count(xml_bytes):
-    """Extracts total quantity of Radisson waters transferred or associated with room 9016."""
     total_qty = 0
     try:
         root = ET.fromstring(xml_bytes)
@@ -236,7 +230,6 @@ def get_member_vode_count(xml_bytes):
     return total_qty
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records with cross-room routing checks and mismatch detection."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
@@ -267,11 +260,7 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob or len(found_routings) > 0 or len(incoming) > 0
         explicit_routing_mention = f"#{room}=>" in global_text or f"ROOM #{room}" in global_text or len(found_routings) > 0 or len(incoming) > 0
         
-        # Pre-check for water/beverage mismatch
         is_water_mismatch = False
-        matched_count = 0
-        
-        # Initial pass to determine match count
         temp_matches = 0
         for item in pdf_items:
             raw_pdf_name = item.split("×")[-1].strip()
@@ -296,6 +285,7 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                 is_water_mismatch = True
 
         validated_articles = []
+        matched_count = 0
         for item in pdf_items:
             raw_pdf_name = item.split("×")[-1].strip()
             xml_equivalent = MAPPING_DICT.get(raw_pdf_name, raw_pdf_name)
@@ -387,8 +377,14 @@ if pdf_file and xml_file:
 
     st.markdown("### 🗂️ Room-by-Room Audit Results")
 
+    # Initialize session state tracking for internal notes if not present
+    if "internal_notes" not in st.session_state:
+        st.session_state.internal_notes = {}
+
     for row in filtered_data:
+        room_no = row["Room Number"]
         status = row["Status"]
+        
         if status == "Paid":
             badge_class = "badge-paid"
         elif status == "Partially Paid":
@@ -402,31 +398,51 @@ if pdf_file and xml_file:
         
         articles_html = "".join([f"<div class='article-item'>{art}</div>" for art in row["Articles"]])
         
-        card_html = f"""
-        <div class="audit-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                <b style="font-size: 1.1em;">Room {row['Room Number']}</b>
-                <span class="{badge_class}">{status}</span>
-            </div>
-            <div style="display: flex; gap: 20px;">
-                <div style="flex: 1;">
-                    <div style="font-size: 0.85em; color: #666; font-weight: bold; margin-bottom: 4px;">Inspected Consumption:</div>
-                    {articles_html}
+        # We use columns inside the card layout or right below details for the internal note selectbox if status != Paid
+        col_card1, col_card2 = st.columns([2, 1])
+        
+        with col_card1:
+            card_html = f"""
+            <div class="audit-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <b style="font-size: 1.1em;">Room {room_no}</b>
+                    <span class="{badge_class}">{status}</span>
                 </div>
-                <div style="flex: 1.5; border-left: 1px solid #eee; padding-left: 15px;">
-                    <div style="font-size: 0.85em; color: #666; font-weight: bold; margin-bottom: 4px;">Dynamic Reconciliation Details:</div>
-                    <div style="font-size: 0.9em; color: #444;">{row['Details']}</div>
+                <div style="display: flex; gap: 20px;">
+                    <div style="flex: 1;">
+                        <div style="font-size: 0.85em; color: #666; font-weight: bold; margin-bottom: 4px;">Inspected Consumption:</div>
+                        {articles_html}
+                    </div>
+                    <div style="flex: 1.5; border-left: 1px solid #eee; padding-left: 15px;">
+                        <div style="font-size: 0.85em; color: #666; font-weight: bold; margin-bottom: 4px;">Dynamic Reconciliation Details:</div>
+                        <div style="font-size: 0.9em; color: #444;">{row['Details']}</div>
+                    </div>
                 </div>
             </div>
-        </div>
-        """
-        st.markdown(card_html, unsafe_allow_html=True)
+            """
+            st.markdown(card_html, unsafe_allow_html=True)
+            
+        with col_card2:
+            st.markdown(f"<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            if status != "Paid":
+                current_note = st.session_state.internal_notes.get(room_no, "— Select Note —")
+                note_options = ["— Select Note —", "Paid", "Declined", "no CC"]
+                selected_note = st.selectbox(
+                    f"Internal Note (Room {room_no})",
+                    note_options,
+                    index=note_options.index(current_note) if current_note in note_options else 0,
+                    key=f"note_{room_no}"
+                )
+                st.session_state.internal_notes[room_no] = selected_note
+            else:
+                st.markdown("<span style='color: green; font-size: 0.85em;'>✔ Automatically Paid</span>", unsafe_allow_html=True)
 
     # CSV Export
     df_export = pd.DataFrame([{
         "Room Number": r["Room Number"],
         "Inspected Consumption": " | ".join(r["Articles"]),
         "Status": r["Status"],
+        "Internal Note": st.session_state.internal_notes.get(r["Room Number"], "— Select Note —"),
         "Details": r["Details"]
     } for r in audit_data])
     
@@ -438,10 +454,18 @@ if pdf_file and xml_file:
         mime="text/csv",
     )
 
-    # Member vode section at the bottom
+    # Collect rooms marked with internal notes for the footer
+    declined_rooms = [r for r, note in st.session_state.internal_notes.items() if note == "Declined"]
+    nocc_rooms = [r for r, note in st.session_state.internal_notes.items() if note == "no CC"]
+
+    declined_str = ", ".join(sorted(declined_rooms, key=lambda x: int(x) if x.isdigit() else 0))
+    nocc_str = ", ".join(sorted(nocc_rooms, key=lambda x: int(x) if x.isdigit() else 0))
+
+    # Member vode section & internal notes footer at the bottom
     member_vode_total = get_member_vode_count(xml_bytes)
     st.markdown("---")
     st.markdown(f"**Member vode: {member_vode_total}x**")
+    st.markdown(f"**Declined: {declined_str}, No CC: {nocc_str}**")
 
 elif pdf_file:
     st.info("ℹ️ PDF uploaded. Please upload your Opera XML log file above to run the automated audit.")
