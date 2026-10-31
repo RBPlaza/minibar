@@ -398,7 +398,6 @@ if pdf_file and xml_file:
         
         articles_html = "".join([f"<div class='article-item'>{art}</div>" for art in row["Articles"]])
         
-        # Changed columns ratio from [2, 1] to [3, 1] to make the selectbox column 50% narrower
         col_card1, col_card2 = st.columns([3, 1])
         
         with col_card1:
@@ -461,11 +460,11 @@ if pdf_file and xml_file:
     declined_str = ", ".join(sorted(declined_rooms, key=lambda x: int(x) if x.isdigit() else 0))
     nocc_str = ", ".join(sorted(nocc_rooms, key=lambda x: int(x) if x.isdigit() else 0))
 
-    # Member vode section & internal notes footer at the bottom
+    # Member vode section & internal notes footer at the bottom (without asterisks)
     member_vode_total = get_member_vode_count(xml_bytes)
     st.markdown("---")
     st.markdown(f"**Member vode: {member_vode_total}x**")
-    st.markdown(f"**Declined: {declined_str}, No CC: {nocc_str}**")
+    st.markdown(f"Declined: {declined_str}, No CC: {nocc_str}")
 
 elif pdf_file:
     st.info("ℹ️ PDF uploaded. Please upload your Opera XML log file above to run the automated audit.")
