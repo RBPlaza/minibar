@@ -27,6 +27,7 @@ st.markdown("""
     .badge-partial { background-color: #fff3cd; color: #856404; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
     .badge-unpaid { background-color: #f8d7da; color: #721c24; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
     .badge-overpaid { background-color: #e2d9f3; color: #4a235a; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
+    .badge-mismatch { background-color: #fce4d6; color: #a04000; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
     .article-item { margin: 3px 0; font-family: monospace; color: #333; }
     </style>
 """, unsafe_allow_html=True)
@@ -138,7 +139,7 @@ def extract_pdf_consumption(uploaded_pdf):
 
 def parse_xml_logs(xml_bytes):
     """Parses Opera XML to extract room charges, quantities, routings, and global cross-references."""
-    xml_data = defaultdict(lambda: {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
+    xml_data = defaultdict(lambda: {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set(), "incoming_routings": []})
     global_xml_text = ""
     try:
         root = ET.fromstring(xml_bytes)
@@ -185,6 +186,14 @@ def parse_xml_logs(xml_bytes):
                             xml_data[src_room]["target_rooms"].add(dst_room)
                             xml_data[src_room]["routings"].append(full_trx_text)
                     
+                    # Also capture incoming routings on destination rooms (e.g. room #805 routed to #810)
+                    from_match = re.search(r'ROUTED FROM.*?#?(\d{3,4})', full_trx_text, re.IGNORECASE)
+                    if not from_match:
+                        from_match = re.search(r'#?(\d{3,4})\s*=>', full_trx_text)
+                    if from_match:
+                        origin_room = from_match.group(1)
+                        xml_data[origin_room]["incoming_routings"].append((room_no, full_trx_text))
+                    
         xml_data["_GLOBAL_TEXT_"] = global_xml_text
         return xml_data
     except Exception as e:
@@ -228,19 +237,18 @@ def get_member_vode_count(xml_bytes):
     return total_qty
 
 def perform_reconciliation(pdf_rooms, xml_rooms):
-    """Reconciles PDF consumption against XML records using precise quantity sums for overpaid checks."""
+    """Reconciles PDF consumption against XML records with cross-room routing checks and mismatch detection."""
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
     global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
     
     for room in discovered_rooms:
         pdf_items = pdf_rooms.get(room, ["1× Radisson Blu voda"])
-        xml_info = xml_rooms.get(room, {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set()})
+        xml_info = xml_rooms.get(room, {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set(), "incoming_routings": []})
         
         xml_text_blob = xml_info["raw_text"].upper()
         xml_items_cleaned = [(clean_text(item[0]), item[1]) for item in xml_info["items"]]
         
-        # Calculate total PDF quantity requested
         pdf_total_qty = 0
         for item in pdf_items:
             q_match = re.search(r'^(\d+)\s*×', item)
@@ -254,9 +262,12 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         for r_match in found_routings:
             target_rooms_set.add(r_match)
             
-        has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob or len(found_routings) > 0
-        target_dest = ", ".join(target_rooms_set) if target_rooms_set else ""
-        explicit_routing_mention = f"#{room}=>" in global_text or f"ROOM #{room}" in global_text or len(found_routings) > 0
+        # Check if incoming routings exist from this room to another room
+        incoming = xml_info["incoming_routings"]
+        routed_dest_room = incoming[0][0] if incoming else (list(target_rooms_set)[0] if target_rooms_set else "")
+        
+        has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob or len(found_routings) > 0 or len(incoming) > 0
+        explicit_routing_mention = f"#{room}=>" in global_text or f"ROOM #{room}" in global_text or len(found_routings) > 0 or len(incoming) > 0
         
         validated_articles = []
         matched_count = 0
@@ -274,7 +285,9 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                     matched = True
                     break
             
-            if not matched and target_dest and ("voda" in clean_pdf_term or "water" in clean_xml_eq or "radisson" in clean_pdf_term):
+            if not matched and routed_dest_room and ("voda" in clean_pdf_term or "water" in clean_xml_eq or "radisson" in clean_pdf_term):
+                matched = True
+            elif not matched and has_routing_or_move:
                 matched = True
 
             if matched:
@@ -283,15 +296,24 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             else:
                 validated_articles.append(f"❌ {item}")
 
-        # Check for overpaid condition based on summed quantities
+        # Check for water/beverage mismatch (e.g. inspected still/mineral water, but paid under different water code)
+        is_water_mismatch = False
+        if matched_count == 0 and xml_total_qty > 0 and any("voda" in clean_text(i) or "water" in clean_text(i) for i in pdf_items):
+            if any("voda" in xi[0].lower() or "water" in xi[0].lower() for xi in xml_info["items"]):
+                is_water_mismatch = True
+
         is_overpaid = xml_total_qty > pdf_total_qty and not (has_routing_or_move or explicit_routing_mention)
 
-        if is_overpaid:
+        if is_water_mismatch:
+            status = "Item Mismatch"
+            paid_desc = ", ".join([f"{xi[1]}x {xi[0]}" for xi in xml_info["items"]])
+            details = f"Item mismatch: Guest consumed different water/items than inspected. Paid for: {paid_desc} (Total qty: {xml_total_qty}, Amount: {xml_total_qty * 2.5}€ approx)."
+        elif is_overpaid:
             status = "Overpaid"
             details = f"Overpaid alert: XML total quantity ({xml_total_qty}) exceeds PDF inspected quantity ({pdf_total_qty})."
-        elif has_routing_or_move or explicit_routing_mention or target_dest:
+        elif has_routing_or_move or explicit_routing_mention or routed_dest_room:
             status = "Paid"
-            dest_str = f" to Room {target_dest}" if target_dest else ""
+            dest_str = f" to **Room {routed_dest_room}**" if routed_dest_room else ""
             details = f"Verified: Charges successfully routed or moved{dest_str} according to XML log."
         elif xml_info["zeroed"]:
             status = "Unpaid"
@@ -329,18 +351,20 @@ if pdf_file and xml_file:
     paid_count = len([r for r in audit_data if r["Status"] == "Paid"])
     partial_count = len([r for r in audit_data if r["Status"] == "Partially Paid"])
     overpaid_count = len([r for r in audit_data if r["Status"] == "Overpaid"])
+    mismatch_count = len([r for r in audit_data if r["Status"] == "Item Mismatch"])
     unpaid_count = len([r for r in audit_data if r["Status"] == "Unpaid"])
 
     st.markdown("### 📊 Audit Summary")
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Total Rooms Audited", total_rooms)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Total Rooms", total_rooms)
     m2.metric("Fully Paid", paid_count)
     m3.metric("Partially Paid", partial_count)
-    m4.metric("Overpaid", overpaid_count)
-    m5.metric("Unpaid / Zero", unpaid_count)
+    m4.metric("Item Mismatch", mismatch_count)
+    m5.metric("Overpaid", overpaid_count)
+    m6.metric("Unpaid / Zero", unpaid_count)
 
     # Filter controls
-    status_filter = st.selectbox("Filter by Payment Status:", ["All", "Paid", "Partially Paid", "Overpaid", "Unpaid"])
+    status_filter = st.selectbox("Filter by Payment Status:", ["All", "Paid", "Partially Paid", "Item Mismatch", "Overpaid", "Unpaid"])
     filtered_data = audit_data if status_filter == "All" else [r for r in audit_data if r["Status"] == status_filter]
 
     st.markdown("### 🗂️ Room-by-Room Audit Results")
@@ -353,6 +377,8 @@ if pdf_file and xml_file:
             badge_class = "badge-partial"
         elif status == "Overpaid":
             badge_class = "badge-overpaid"
+        elif status == "Item Mismatch":
+            badge_class = "badge-mismatch"
         else:
             badge_class = "badge-unpaid"
         
