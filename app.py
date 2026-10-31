@@ -186,7 +186,6 @@ def parse_xml_logs(xml_bytes):
                             xml_data[src_room]["target_rooms"].add(dst_room)
                             xml_data[src_room]["routings"].append(full_trx_text)
                     
-                    # Also capture incoming routings on destination rooms (e.g. room #805 routed to #810)
                     from_match = re.search(r'ROUTED FROM.*?#?(\d{3,4})', full_trx_text, re.IGNORECASE)
                     if not from_match:
                         from_match = re.search(r'#?(\d{3,4})\s*=>', full_trx_text)
@@ -262,20 +261,21 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         for r_match in found_routings:
             target_rooms_set.add(r_match)
             
-        # Check if incoming routings exist from this room to another room
         incoming = xml_info["incoming_routings"]
         routed_dest_room = incoming[0][0] if incoming else (list(target_rooms_set)[0] if target_rooms_set else "")
         
         has_routing_or_move = len(xml_info["routings"]) > 0 or "=>" in xml_text_blob or len(found_routings) > 0 or len(incoming) > 0
         explicit_routing_mention = f"#{room}=>" in global_text or f"ROOM #{room}" in global_text or len(found_routings) > 0 or len(incoming) > 0
         
-        validated_articles = []
+        # Pre-check for water/beverage mismatch
+        is_water_mismatch = False
         matched_count = 0
         
+        # Initial pass to determine match count
+        temp_matches = 0
         for item in pdf_items:
             raw_pdf_name = item.split("×")[-1].strip()
             xml_equivalent = MAPPING_DICT.get(raw_pdf_name, raw_pdf_name)
-            
             clean_pdf_term = clean_text(raw_pdf_name)
             clean_xml_eq = clean_text(xml_equivalent)
             
@@ -284,7 +284,29 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                 if clean_xml_eq in xml_item or xml_item in clean_xml_eq or clean_pdf_term in xml_item:
                     matched = True
                     break
+            if not matched and routed_dest_room and ("voda" in clean_pdf_term or "water" in clean_xml_eq or "radisson" in clean_pdf_term):
+                matched = True
+            elif not matched and has_routing_or_move:
+                matched = True
+            if matched:
+                temp_matches += 1
+
+        if temp_matches == 0 and xml_total_qty > 0 and any("voda" in clean_text(i) or "water" in clean_text(i) for i in pdf_items):
+            if any("voda" in xi[0].lower() or "water" in xi[0].lower() for xi in xml_info["items"]):
+                is_water_mismatch = True
+
+        validated_articles = []
+        for item in pdf_items:
+            raw_pdf_name = item.split("×")[-1].strip()
+            xml_equivalent = MAPPING_DICT.get(raw_pdf_name, raw_pdf_name)
+            clean_pdf_term = clean_text(raw_pdf_name)
+            clean_xml_eq = clean_text(xml_equivalent)
             
+            matched = False
+            for xml_item, _ in xml_items_cleaned:
+                if clean_xml_eq in xml_item or xml_item in clean_xml_eq or clean_pdf_term in xml_item:
+                    matched = True
+                    break
             if not matched and routed_dest_room and ("voda" in clean_pdf_term or "water" in clean_xml_eq or "radisson" in clean_pdf_term):
                 matched = True
             elif not matched and has_routing_or_move:
@@ -293,21 +315,17 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             if matched:
                 validated_articles.append(f"✅ {item}")
                 matched_count += 1
+            elif is_water_mismatch:
+                validated_articles.append(f"❓ {item}")
             else:
                 validated_articles.append(f"❌ {item}")
-
-        # Check for water/beverage mismatch (e.g. inspected still/mineral water, but paid under different water code)
-        is_water_mismatch = False
-        if matched_count == 0 and xml_total_qty > 0 and any("voda" in clean_text(i) or "water" in clean_text(i) for i in pdf_items):
-            if any("voda" in xi[0].lower() or "water" in xi[0].lower() for xi in xml_info["items"]):
-                is_water_mismatch = True
 
         is_overpaid = xml_total_qty > pdf_total_qty and not (has_routing_or_move or explicit_routing_mention)
 
         if is_water_mismatch:
             status = "Item Mismatch"
             paid_desc = ", ".join([f"{xi[1]}x {xi[0]}" for xi in xml_info["items"]])
-            details = f"Item mismatch: Guest consumed different water/items than inspected. Paid for: {paid_desc} (Total qty: {xml_total_qty}, Amount: {xml_total_qty * 2.5}€ approx)."
+            details = f"Item mismatch: Guest consumed different water/items than inspected. Paid for: {paid_desc} (Total qty: {xml_total_qty})."
         elif is_overpaid:
             status = "Overpaid"
             details = f"Overpaid alert: XML total quantity ({xml_total_qty}) exceeds PDF inspected quantity ({pdf_total_qty})."
