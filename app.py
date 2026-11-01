@@ -139,7 +139,6 @@ def parse_xml_logs(xml_bytes):
     try:
         root = ET.fromstring(xml_bytes)
         
-        # Universal routing & transfer parser (handles '=>' and 'Routed From')
         for first in root.findall(".//FIRST"):
             room_elem = first.find("FIRST")
             room_no = room_elem.text.strip() if room_elem is not None and room_elem.text else ""
@@ -180,7 +179,7 @@ def parse_xml_logs(xml_bytes):
                     origin_room = match_arrow.group(1)
                     if origin_room != room_no:
                         xml_data[origin_room]["routed_out"].append((room_no, article, qty))
-                        xml_data[room_no]["incoming_routings"].append((origin_room, article, qty))
+                        xml_data[origin_room]["incoming_routings"].append((origin_room, article, qty))
                     
                 # Check standard 'Routed From' syntax
                 route_match = re.search(r'Routed\s+From.*?Room\s*#(\d{3,4})', full_trx_text, re.IGNORECASE)
@@ -286,7 +285,8 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                 if len(routed_out) > 0:
                     dst_room = routed_out[0][0]
                     validated_articles.append(f"✅ {item_str} (Routed to Room {dst_room})")
-                elif incoming_match_qty > 0:
+                elif len(incoming_routings) > 0:
+                    origin_room_name = incoming_routings[0][0]
                     validated_articles.append(f"✅ {item_str} (Routed from Room {origin_room_name})")
                 else:
                     validated_articles.append(f"✅ {item_str}")
