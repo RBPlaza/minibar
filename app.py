@@ -139,7 +139,6 @@ def parse_xml_logs(xml_bytes):
     try:
         root = ET.fromstring(xml_bytes)
         
-        # Scan room 9016 (Member Vode pooling room) and map guest room routings correctly
         member_routing_to_9016 = defaultdict(list)
         for first in root.findall(".//FIRST"):
             room_elem = first.find("FIRST")
@@ -162,7 +161,6 @@ def parse_xml_logs(xml_bytes):
                         except:
                             pass
                     
-                    # Match pattern like: "OZCELIK TANSEL #819=>" or "PRSA KRISTINA #1116=>" or "Sodja Gregor #1111=>"
                     match_origin = re.search(r'#(\d{3,4})\s*=>', combined_ref)
                     if match_origin:
                         origin_room = match_origin.group(1)
@@ -172,7 +170,6 @@ def parse_xml_logs(xml_bytes):
             room_elem = first.find("FIRST")
             room_no = room_elem.text.strip() if room_elem is not None and room_elem.text else ""
             
-            # Register member routings outbound to 9016
             if room_no in member_routing_to_9016:
                 for dest_room, art, q in member_routing_to_9016[room_no]:
                     xml_data[room_no]["member_routed_out"].append((dest_room, art, q))
@@ -223,7 +220,6 @@ def parse_xml_logs(xml_bytes):
         return {}
 
 def get_member_vode_count(xml_bytes):
-    """Accurately counts all member water transactions routed to room 9016[cite: 4]."""
     total_qty = 0
     try:
         root = ET.fromstring(xml_bytes)
@@ -394,4 +390,114 @@ if pdf_file and xml_file:
     total_rooms = len(audit_data)
     paid_count = len([r for r in audit_data if r["Status"] == "Paid"])
     partial_count = len([r for r in audit_data if r["Status"] == "Partially Paid"])
-    overpaid_count = len([r for r in audit_data if r["Status"] ==
+    overpaid_count = len([r for r in audit_data if r["Status"] == "Overpaid"])
+    mismatch_count = len([r for r in audit_data if r["Status"] == "Item Mismatch"])
+    unpaid_count = len([r for r in audit_data if r["Status"] == "Unpaid"])
+
+    st.markdown("### 📊 Audit Summary")
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Total Rooms", total_rooms)
+    m2.metric("Fully Paid", paid_count)
+    m3.metric("Partially Paid", partial_count)
+    m4.metric("Item Mismatch", mismatch_count)
+    m5.metric("Overpaid", overpaid_count)
+    m6.metric("Unpaid / Zero", unpaid_count)
+
+    # Filter controls
+    status_filter = st.selectbox("Filter by Payment Status:", ["All", "Paid", "Partially Paid", "Item Mismatch", "Overpaid", "Unpaid"])
+    filtered_data = audit_data if status_filter == "All" else [r for r in audit_data if r["Status"] == status_filter]
+
+    st.markdown("### 🗂️ Room-by-Room Audit Results")
+
+    if "internal_notes" not in st.session_state:
+        st.session_state.internal_notes = {}
+
+    for row in filtered_data:
+        room_no = row["Room Number"]
+        status = row["Status"]
+        
+        if status == "Paid":
+            badge_class = "badge-paid"
+        elif status == "Partially Paid":
+            badge_class = "badge-partial"
+        elif status == "Overpaid":
+            badge_class = "badge-overpaid"
+        elif status == "Item Mismatch":
+            badge_class = "badge-mismatch"
+        else:
+            badge_class = "badge-unpaid"
+        
+        articles_html = "".join([f"<div class='article-item'>{art}</div>" for art in row["Articles"]])
+        
+        col_card1, col_card2 = st.columns([3, 1])
+        
+        with col_card1:
+            card_html = f"""
+            <div class="audit-card">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <b style="font-size: 1.1em;">Room {room_no}</b>
+                    <span class="{badge_class}">{status}</span>
+                </div>
+                <div style="display: flex; gap: 20px;">
+                    <div style="flex: 1;">
+                        <div style="font-size: 0.85em; color: #666; font-weight: bold; margin-bottom: 4px;">Inspected Consumption:</div>
+                        {articles_html}
+                    </div>
+                    <div style="flex: 1.5; border-left: 1px solid #eee; padding-left: 15px;">
+                        <div style="font-size: 0.85em; color: #666; font-weight: bold; margin-bottom: 4px;">Dynamic Reconciliation Details:</div>
+                        <div style="font-size: 0.9em; color: #444;">{row['Details']}</div>
+                    </div>
+                </div>
+            </div>
+            """
+            st.markdown(card_html, unsafe_allow_html=True)
+            
+        with col_card2:
+            st.markdown(f"<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+            if status != "Paid":
+                current_note = st.session_state.internal_notes.get(room_no, "— Select Note —")
+                note_options = ["— Select Note —", "Paid", "Declined", "no CC"]
+                selected_note = st.selectbox(
+                    f"Note (Room {room_no})",
+                    note_options,
+                    index=note_options.index(current_note) if current_note in note_options else 0,
+                    key=f"note_{room_no}"
+                )
+                st.session_state.internal_notes[room_no] = selected_note
+            else:
+                st.markdown("<span style='color: green; font-size: 0.85em;'>✔ Paid</span>", unsafe_allow_html=True)
+
+    # CSV Export
+    df_export = pd.DataFrame([{
+        "Room Number": r["Room Number"],
+        "Inspected Consumption": " | ".join(r["Articles"]),
+        "Status": r["Status"],
+        "Internal Note": st.session_state.internal_notes.get(r["Room Number"], "— Select Note —"),
+        "Details": r["Details"]
+    } for r in audit_data])
+    
+    csv = df_export.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Audit Report (CSV)",
+        data=csv,
+        file_name="minibar_audit_report_dynamic.csv",
+        mime="text/csv",
+    )
+
+    declined_rooms = [r for r, note in st.session_state.internal_notes.items() if note == "Declined"]
+    nocc_rooms = [r for r, note in st.session_state.internal_notes.items() if note == "no CC"]
+
+    declined_str = ", ".join(sorted(declined_rooms, key=lambda x: int(x) if x.isdigit() else 0))
+    nocc_str = ", ".join(sorted(nocc_rooms, key=lambda x: int(x) if x.isdigit() else 0))
+
+    member_vode_total = get_member_vode_count(xml_bytes)
+    st.markdown("---")
+    st.markdown(f"**Member vode: {member_vode_total}x**")
+    st.markdown(f"Declined: {declined_str}, No CC: {nocc_str}")
+
+elif pdf_file:
+    st.info("ℹ️ PDF uploaded. Please upload your Opera XML log file above to run the automated audit.")
+elif xml_file:
+    st.info("ℹ️ XML uploaded. Please upload your Housekeeping PDF inspection report above to run the automated audit.")
+else:
+    st.info("👈 Please upload both your Housekeeping PDF inspection report and Opera XML log file above to run the automated audit.")
