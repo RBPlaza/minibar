@@ -139,7 +139,7 @@ def parse_xml_logs(xml_bytes):
     try:
         root = ET.fromstring(xml_bytes)
         
-        # First, scan room 9016 (or any member room) for member water routings format: "Guest Name #ROOM=>..."
+        # Universally scan room 9016 (or any member vode grouping room) for any guest room routing reference patterns
         member_routing_map = defaultdict(list)
         for first in root.findall(".//FIRST"):
             room_elem = first.find("FIRST")
@@ -162,7 +162,7 @@ def parse_xml_logs(xml_bytes):
                         except:
                             pass
                     
-                    # Match pattern like: "OZCELIK TANSEL #819=>" or "Sodja Gregor #1111=>"
+                    # Dynamically match ANY room pattern in references like "Sodja Gregor #1111=>" or "OZCELIK TANSEL #819=>" or "PRSA KRISTINA #1116=>"
                     match_origin = re.search(r'#(\d{3,4})\s*=>', combined_ref)
                     if match_origin:
                         origin_room = match_origin.group(1)
@@ -172,7 +172,7 @@ def parse_xml_logs(xml_bytes):
             room_elem = first.find("FIRST")
             room_no = room_elem.text.strip() if room_elem is not None and room_elem.text else ""
             
-            # Inject member routings discovered from 9016
+            # Automatically inject member routings discovered from room 9016 for this room
             if room_no in member_routing_map:
                 for dest_room, art, q in member_routing_map[room_no]:
                     xml_data[room_no]["incoming_routings"].append((dest_room, art, q))
@@ -223,7 +223,7 @@ def parse_xml_logs(xml_bytes):
         return {}
 
 def get_member_vode_count(xml_bytes):
-    """Accurately counts member water transactions routed to room 9016[cite: 6]."""
+    """Accurately counts all member water transactions routed to room 9016[cite: 4]."""
     total_qty = 0
     try:
         root = ET.fromstring(xml_bytes)
