@@ -134,7 +134,7 @@ def extract_pdf_consumption(uploaded_pdf):
         return {}
 
 def parse_xml_logs(xml_bytes):
-    xml_data = defaultdict(lambda: {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "incoming_routings": [], "routed_out": [], "has_payment": False})
+    xml_data = defaultdict(lambda: {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "incoming_routings": [], "routed_out": []})
     global_xml_text = ""
     try:
         root = ET.fromstring(xml_bytes)
@@ -166,10 +166,6 @@ def parse_xml_logs(xml_bytes):
                 xml_data[room_no]["raw_text"] += " " + full_trx_text
                 global_xml_text += " " + full_trx_text
                 
-                # Check for actual payment / settlement proof (Credit card supplement, payment, or valid folio settlement)
-                if cc_text or "VISA" in full_trx_text.upper() | "MC" in full_trx_text.upper() | "MASTERCARD" in full_trx_text.upper() | "AMEX" in full_trx_text.upper() | "PAYMENT" in full_trx_text.upper() | "PAID" in full_trx_text.upper():
-                    xml_data[room_no]["has_payment"] = True
-                
                 if "PREVERJENO, NI BILO PORABE" in full_trx_text.upper():
                     xml_data[room_no]["zeroed"] = True
                 
@@ -177,13 +173,15 @@ def parse_xml_logs(xml_bytes):
                     xml_data[room_no]["items"].append((article, qty))
                     xml_data[room_no]["total_qty"] += qty
                 
+                # Check for '=>' transfer/routing syntax (e.g. PRSA KRISTINA #1116=>RADISSON VODE MEMBERJI #9016)
                 match_arrow = re.search(r'#(\d{3,4})\s*=>', f"{reference} {cc_text}")
                 if match_arrow:
                     origin_room = match_arrow.group(1)
                     if origin_room != room_no:
                         xml_data[origin_room]["routed_out"].append((room_no, article, qty))
-                        xml_data[room_no]["incoming_routings"].append((origin_room, article, qty))
+                        xml_data[origin_room]["incoming_routings"].append((origin_room, article, qty))
                     
+                # Check standard 'Routed From' syntax
                 route_match = re.search(r'Routed\s+From.*?Room\s*#(\d{3,4})', full_trx_text, re.IGNORECASE)
                 if route_match:
                     origin_room = route_match.group(1)
@@ -239,12 +237,11 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
     
     for room in discovered_rooms:
         pdf_items = pdf_rooms.get(room, ["1× Radisson Blu voda"])
-        xml_info = xml_rooms.get(room, {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "incoming_routings": [], "routed_out": [], "has_payment": False})
+        xml_info = xml_rooms.get(room, {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "incoming_routings": [], "routed_out": []})
         
         xml_items_raw = xml_info["items"]
         incoming_routings = xml_info["incoming_routings"]
         routed_out = xml_info["routed_out"]
-        has_payment = xml_info["has_payment"]
         
         pdf_total_qty = 0
         pdf_parsed_items = []
@@ -287,10 +284,7 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             if total_accounted >= p_q or len(routed_out) > 0:
                 if len(routed_out) > 0:
                     dst_room = routed_out[0][0]
-                    if has_payment or dst_room == "9016":
-                        validated_articles.append(f"✅ {item_str} (Routed to Room {dst_room})")
-                    else:
-                        validated_articles.append(f"⚠️ {item_str} (Routed to Room {dst_room} — Unsettled)")
+                    validated_articles.append(f"✅ {item_str} (Routed to Room {dst_room})")
                 elif len(incoming_routings) > 0:
                     origin_room_name = incoming_routings[0][0]
                     validated_articles.append(f"✅ {item_str} (Routed from Room {origin_room_name})")
@@ -311,10 +305,6 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             status = "Item Mismatch"
             unconsumed_str = ", ".join(unconsumed_paid_items)
             details = f"Discrepancy: Paid for unconsumed item(s) [{unconsumed_str}]."
-        elif len(routed_out) > 0 and not has_payment and routed_out[0][0] != "9016":
-            status = "Unpaid"
-            routed_desc_str = ", ".join(routed_out_notes)
-            details = f"Charges routed ({routed_desc_str}), but no payment settlement/proof found in XML."
         elif len(routed_out) > 0:
             status = "Paid"
             routed_desc_str = ", ".join(routed_out_notes)
