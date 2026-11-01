@@ -178,7 +178,6 @@ def parse_xml_logs(xml_bytes):
                 if route_match:
                     origin_room = route_match.group(1)
                     if origin_room != room_no:
-                        # room_no (e.g. 1111) received it from origin_room (e.g. 411)
                         xml_data[room_no]["incoming_routings"].append((origin_room, article, qty))
                         xml_data[origin_room]["routed_out"].append((room_no, article, qty))
                         
@@ -204,7 +203,7 @@ def get_member_vode_count(xml_bytes):
                 qty_elem = trx.find("QUANTITY")
                 
                 article = desc.text.strip() if desc is not None and desc.text else ""
-                reference = ref.text.strip() if ref is not None and ref.text else ""
+                reference = ref.text.strip() if reference is not None and reference.text else ""
                 rem_text = remark.text.strip() if remark is not None and remark.text else ""
                 cc_text = cc_supp.text.strip() if cc_supp is not None and cc_supp.text else ""
                 
@@ -252,7 +251,6 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         total_pdf_types = len(pdf_parsed_items)
         unconsumed_paid_items = []
 
-        # Check for unconsumed items paid in XML (ignoring items that were routed out)
         routed_out_descs = {clean_text(r[1]) for r in routed_out}
         for x_desc, x_q in xml_items_raw:
             clean_x = clean_text(x_desc)
@@ -273,14 +271,15 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                 if c_xml_eq in clean_x or clean_x in c_xml_eq or c_pdf in clean_x:
                     item_matched_qty += x_q
 
-            # Check if this item arrived via incoming routing
             incoming_match_qty = 0
             origin_room_name = ""
+            incoming_item_desc = ""
             for o_room, o_desc, o_q in incoming_routings:
                 clean_o = clean_text(o_desc)
                 if c_xml_eq in clean_o or clean_o in c_xml_eq or c_pdf in clean_o:
                     incoming_match_qty += o_q
                     origin_room_name = o_room
+                    incoming_item_desc = f"{o_q}x {o_desc}"
 
             total_accounted = item_matched_qty + incoming_match_qty
 
@@ -291,23 +290,28 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                     validated_articles.append(f"✅ {item_str}")
                 matched_pdf_count += 1
             elif total_accounted > 0:
-                if incoming_match_qty > 0:
-                    validated_articles.append(f"⚠️ {item_str} (Partial: Accounted {total_accounted}/{p_q}, routed from Room {origin_room_name})")
-                else:
-                    validated_articles.append(f"⚠️ {item_str} (Partial: Paid {total_accounted}/{p_q})")
+                validated_articles.append(f"⚠️ {item_str} (Partial: Accounted {total_accounted}/{p_q})")
                 matched_pdf_count += 0.5
             else:
-                validated_articles.append(f"❌ {item_str}")
+                # Check if an incoming routing exists for this room even if it didn't match the inspected water
+                if len(incoming_routings) > 0 and not any("routed" in va.lower() for va in validated_articles):
+                    o_room, o_desc, o_q = incoming_routings[0]
+                    validated_articles.append(f"❌ {item_str} — Note: Received {o_q}x {o_desc} routed from Room {o_room}")
+                else:
+                    validated_articles.append(f"❌ {item_str}")
 
-        # Check if items were routed OUT from this room
         routed_out_notes = []
         for dst_room, r_desc, r_q in routed_out:
             routed_out_notes.append(f"{r_q}x {r_desc} routed to Room {dst_room}")
 
-        if len(unconsumed_paid_items) > 0:
+        if len(unconsumed_paid_items) > 0 and len(incoming_routings) == 0:
             status = "Item Mismatch"
             unconsumed_str = ", ".join(unconsumed_paid_items)
             details = f"Discrepancy: Paid for unconsumed item(s) [{unconsumed_str}]."
+        elif len(incoming_routings) > 0 and matched_pdf_count == 0:
+            status = "Item Mismatch"
+            o_room, o_desc, o_q = incoming_routings[0]
+            details = f"Discrepancy: Inspected items not matched, but received {o_q}x {o_desc} routed from Room {o_room}."
         elif len(routed_out) > 0 and matched_pdf_count < total_pdf_types:
             status = "Unpaid"
             routed_desc_str = ", ".join(routed_out_notes)
