@@ -172,29 +172,22 @@ def parse_xml_logs(xml_bytes):
                     xml_data[room_no]["items"].append((article, qty))
                     xml_data[room_no]["total_qty"] += qty
                     
-                # Precise routing & credit card supplement room check (e.g., "Routed From ... Room #411" or "poraba iz 802")
+                # Strict routing check: only track outbound routing if explicit destination room or source room match
                 combined_source_check = f"{reference} {rem_text} {cc_text}"
-                route_match = re.search(r'(?:Room\s*#|iz\s*#?|from\s+(?:[A-Z\s]+\s+)?Room\s*#)(\d{3,4})', combined_source_check, re.IGNORECASE)
+                route_match = re.search(r'(?:Routed From.*?Room\s*#|iz\s*#?)(\d{3,4})', combined_source_check, re.IGNORECASE)
                 if route_match:
                     origin_room = route_match.group(1)
                     if origin_room != room_no:
-                        xml_data[origin_room]["incoming_routings"].append((room_no, full_trx_text))
+                        # This means room_no (e.g. 1111) received a charge from origin_room (e.g. 411)
+                        xml_data[origin_room]["target_rooms"].add(room_no)
                 
-                if "ROUTED FROM" in full_trx_text.upper() or "=>" in full_trx_text:
-                    xml_data[room_no]["routings"].append(full_trx_text)
+                if "=>" in full_trx_text:
                     source_match = re.search(r'#?(\d{3,4})\s*=>', full_trx_text)
                     dest_match = re.search(r'=>\s*(?:[A-Z\s]+)?#?(\d{3,4})', full_trx_text)
-                    if source_match:
+                    if source_match and dest_match:
                         src_room = source_match.group(1)
-                        if dest_match:
-                            dst_room = dest_match.group(1)
-                            xml_data[src_room]["target_rooms"].add(dst_room)
-                            xml_data[src_room]["routings"].append(full_trx_text)
-                    
-                    from_match = re.search(r'ROUTED FROM.*?#?(\d{3,4})', full_trx_text, re.IGNORECASE)
-                    if from_match:
-                        origin_room = from_match.group(1)
-                        xml_data[origin_room]["incoming_routings"].append((room_no, full_trx_text))
+                        dst_room = dest_match.group(1)
+                        xml_data[src_room]["target_rooms"].add(dst_room)
                     
         xml_data["_GLOBAL_TEXT_"] = global_xml_text
         return xml_data
@@ -242,21 +235,12 @@ def get_member_vode_count(xml_bytes):
 def perform_reconciliation(pdf_rooms, xml_rooms):
     audit_results = []
     discovered_rooms = sorted(list(pdf_rooms.keys()), key=lambda x: int(x) if x.isdigit() else 0)
-    global_text = xml_rooms.get("_GLOBAL_TEXT_", "").upper()
     
     for room in discovered_rooms:
         pdf_items = pdf_rooms.get(room, ["1× Radisson Blu voda"])
         xml_info = xml_rooms.get(room, {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set(), "incoming_routings": []})
         
-        xml_text_blob = xml_info["raw_text"].upper()
         xml_items_raw = xml_info["items"]
-        
-        # Build dictionary of XML paid items and quantities for exact matching
-        xml_item_counts = defaultdict(int)
-        for x_desc, x_qty in xml_items_raw:
-            clean_x = clean_text(x_desc)
-            xml_item_counts[clean_x] += x_qty
-
         pdf_total_qty = 0
         pdf_parsed_items = []
         for item in pdf_items:
@@ -268,22 +252,15 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             pdf_parsed_items.append((item, q, clean_text(raw_pdf_name), clean_text(xml_eq)))
 
         xml_total_qty = xml_info["total_qty"]
-        
-        incoming = xml_info["incoming_routings"]
-        routed_dest_room = incoming[0][0] if incoming else ""
-        
-        has_routing_or_move = len(xml_info["routings"]) > 0 or routed_dest_room != ""
+        target_rooms_set = xml_info["target_rooms"]
+        routed_dest_room = list(target_rooms_set)[0] if target_rooms_set else ""
         
         validated_articles = []
         matched_pdf_count = 0
         total_pdf_types = len(pdf_parsed_items)
-        
-        # Track matched quantities per item
-        matched_xml_qtys = 0
         unconsumed_paid_items = []
 
-        # Check for items paid in XML that were NOT in PDF inspection
-        inspected_clean_keys = {p[3] for p in pdf_parsed_items}
+        # Check for unconsumed items paid in XML
         for x_desc, x_q in xml_items_raw:
             clean_x = clean_text(x_desc)
             found_match = False
@@ -291,7 +268,7 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                 if c_xml_eq in clean_x or clean_x in c_xml_eq or c_pdf in clean_x:
                     found_match = True
                     break
-            if not found_match and not has_routing_or_move:
+            if not found_match and len(target_rooms_set) == 0:
                 unconsumed_paid_items.append(f"{x_q}x {x_desc}")
 
         for item_str, p_q, c_pdf, c_xml_eq in pdf_parsed_items:
@@ -304,28 +281,24 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             if item_matched_qty >= p_q:
                 validated_articles.append(f"✅ {item_str}")
                 matched_pdf_count += 1
-                matched_xml_qtys += p_q
             elif item_matched_qty > 0:
                 validated_articles.append(f"⚠️ {item_str} (Partial: Paid {item_matched_qty}/{p_q})")
                 matched_pdf_count += 0.5
-                matched_xml_qtys += item_matched_qty
-            elif routed_dest_room != "" or has_routing_or_move:
-                validated_articles.append(f"✅ {item_str} (Routed/Covered)")
+            elif routed_dest_room != "":
+                validated_articles.append(f"✅ {item_str} (Routed to Room {routed_dest_room})")
                 matched_pdf_count += 1
             else:
                 validated_articles.append(f"❌ {item_str}")
 
-        is_overpaid = xml_total_qty > pdf_total_qty and len(unconsumed_paid_items) > 0
-
         if len(unconsumed_paid_items) > 0:
             status = "Item Mismatch"
             unconsumed_str = ", ".join(unconsumed_paid_items)
-            details = f"Discrepancy: Paid for unconsumed item(s) [{unconsumed_str}]. Check manual charges or wrong room posting."
+            details = f"Discrepancy: Paid for unconsumed item(s) [{unconsumed_str}]."
         elif matched_pdf_count == total_pdf_types and xml_total_qty >= pdf_total_qty:
             status = "Paid"
             dest_str = f" to **Room {routed_dest_room}**" if routed_dest_room else ""
             details = f"Verified: All inspected items accounted for in XML log{dest_str}."
-        elif routed_dest_room != "":
+        elif routed_dest_room != "" and matched_pdf_count == total_pdf_types:
             status = "Paid"
             details = f"Verified: Charges successfully routed to **Room {routed_dest_room}**."
         elif xml_info["zeroed"]:
