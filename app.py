@@ -134,7 +134,7 @@ def extract_pdf_consumption(uploaded_pdf):
         return {}
 
 def parse_xml_logs(xml_bytes):
-    xml_data = defaultdict(lambda: {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set(), "incoming_routings": []})
+    xml_data = defaultdict(lambda: {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set(), "routed_items": []})
     global_xml_text = ""
     try:
         root = ET.fromstring(xml_bytes)
@@ -178,8 +178,8 @@ def parse_xml_logs(xml_bytes):
                 if route_match:
                     origin_room = route_match.group(1)
                     if origin_room != room_no:
-                        # Register that room_no received a charge from origin_room
                         xml_data[origin_room]["target_rooms"].add(room_no)
+                        xml_data[origin_room]["routed_items"].append((article, qty, room_no))
                         
         xml_data["_GLOBAL_TEXT_"] = global_xml_text
         return xml_data
@@ -230,9 +230,12 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
     
     for room in discovered_rooms:
         pdf_items = pdf_rooms.get(room, ["1× Radisson Blu voda"])
-        xml_info = xml_rooms.get(room, {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set(), "incoming_routings": []})
+        xml_info = xml_rooms.get(room, {"items": [], "total_qty": 0, "routings": [], "zeroed": False, "raw_text": "", "target_rooms": set(), "routed_items": []})
         
         xml_items_raw = xml_info["items"]
+        routed_items = xml_info["routed_items"]
+        target_rooms_set = xml_info["target_rooms"]
+        
         pdf_total_qty = 0
         pdf_parsed_items = []
         for item in pdf_items:
@@ -244,8 +247,6 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             pdf_parsed_items.append((item, q, clean_text(raw_pdf_name), clean_text(xml_eq)))
 
         xml_total_qty = xml_info["total_qty"]
-        target_rooms_set = xml_info["target_rooms"]
-        routed_dest_room = list(target_rooms_set)[0] if target_rooms_set else ""
         
         validated_articles = []
         matched_pdf_count = 0
@@ -265,20 +266,32 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
 
         for item_str, p_q, c_pdf, c_xml_eq in pdf_parsed_items:
             item_matched_qty = 0
+            # Check direct local items
             for x_desc, x_q in xml_items_raw:
                 clean_x = clean_text(x_desc)
                 if c_xml_eq in clean_x or clean_x in c_xml_eq or c_pdf in clean_x:
                     item_matched_qty += x_q
+            
+            # Check items explicitly routed *from* this room to another room
+            routed_match_qty = 0
+            dest_room_for_routing = ""
+            for r_desc, r_q, r_dst in routed_items:
+                clean_r = clean_text(r_desc)
+                if c_xml_eq in clean_r or clean_r in c_xml_eq or c_pdf in clean_r:
+                    routed_match_qty += r_q
+                    dest_room_for_routing = r_dst
 
-            if item_matched_qty >= p_q:
-                validated_articles.append(f"✅ {item_str}")
+            total_accounted_qty = item_matched_qty + routed_match_qty
+
+            if total_accounted_qty >= p_q:
+                if routed_match_qty > 0:
+                    validated_articles.append(f"✅ {item_str} (Routed to Room {dest_room_for_routing})")
+                else:
+                    validated_articles.append(f"✅ {item_str}")
                 matched_pdf_count += 1
-            elif item_matched_qty > 0:
-                validated_articles.append(f"⚠️ {item_str} (Partial: Paid {item_matched_qty}/{p_q})")
+            elif total_accounted_qty > 0:
+                validated_articles.append(f"⚠️ {item_str} (Partial: Accounted {total_accounted_qty}/{p_q})")
                 matched_pdf_count += 0.5
-            elif routed_dest_room != "":
-                validated_articles.append(f"✅ {item_str} (Routed to Room {routed_dest_room})")
-                matched_pdf_count += 1
             else:
                 validated_articles.append(f"❌ {item_str}")
 
@@ -286,17 +299,13 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             status = "Item Mismatch"
             unconsumed_str = ", ".join(unconsumed_paid_items)
             details = f"Discrepancy: Paid for unconsumed item(s) [{unconsumed_str}]."
-        elif matched_pdf_count == total_pdf_types and xml_total_qty >= pdf_total_qty:
+        elif matched_pdf_count == total_pdf_types and (xml_total_qty >= pdf_total_qty or len(routed_items) > 0):
             status = "Paid"
-            dest_str = f" to **Room {routed_dest_room}**" if routed_dest_room else ""
-            details = f"Verified: All inspected items accounted for in XML log{dest_str}."
-        elif routed_dest_room != "" and matched_pdf_count == total_pdf_types:
-            status = "Paid"
-            details = f"Verified: Charges successfully routed to **Room {routed_dest_room}**."
+            details = f"Verified: All inspected items accounted for in XML log."
         elif xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
-        elif matched_count := matched_pdf_count > 0:
+        elif matched_pdf_count > 0:
             status = "Partially Paid"
             details = f"Partial match: Accounted for {int(matched_pdf_count)} of {total_pdf_types} inspected item type(s)."
         else:
