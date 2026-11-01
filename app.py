@@ -172,7 +172,6 @@ def parse_xml_logs(xml_bytes):
                     xml_data[room_no]["items"].append((article, qty))
                     xml_data[room_no]["total_qty"] += qty
                     
-                # Explicit routing parser: Look for "Routed From ... Room #XXX"
                 combined_source_check = f"{reference} {rem_text} {cc_text}"
                 route_match = re.search(r'Routed\s+From.*?Room\s*#(\d{3,4})', combined_source_check, re.IGNORECASE)
                 if route_match:
@@ -188,6 +187,7 @@ def parse_xml_logs(xml_bytes):
         return {}
 
 def get_member_vode_count(xml_bytes):
+    """Accurately counts member water transactions routed to room 9016."""
     total_qty = 0
     try:
         root = ET.fromstring(xml_bytes)
@@ -203,13 +203,13 @@ def get_member_vode_count(xml_bytes):
                 qty_elem = trx.find("QUANTITY")
                 
                 article = desc.text.strip() if desc is not None and desc.text else ""
-                reference = ref.text.strip() if reference is not None and reference.text else ""
+                reference = ref.text.strip() if ref is not None and ref.text else ""
                 rem_text = remark.text.strip() if remark is not None and remark.text else ""
                 cc_text = cc_supp.text.strip() if cc_supp is not None and cc_supp.text else ""
                 
                 full_trx = f"{room_no} {article} {reference} {rem_text} {cc_text}".upper()
                 
-                is_radisson_water = "RADISSON" in article.upper() or "VODA" in article.upper() or "MINIBAR - RADISSON VODA" in article.upper()
+                is_radisson_water = "RADISSON" in article.upper() or "VODA" in article.upper()
                 is_target_room = room_no == "9016" or "9016" in full_trx
                 
                 if is_target_room and is_radisson_water:
@@ -273,13 +273,11 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
 
             incoming_match_qty = 0
             origin_room_name = ""
-            incoming_item_desc = ""
             for o_room, o_desc, o_q in incoming_routings:
                 clean_o = clean_text(o_desc)
                 if c_xml_eq in clean_o or clean_o in c_xml_eq or c_pdf in clean_o:
                     incoming_match_qty += o_q
                     origin_room_name = o_room
-                    incoming_item_desc = f"{o_q}x {o_desc}"
 
             total_accounted = item_matched_qty + incoming_match_qty
 
@@ -293,7 +291,6 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                 validated_articles.append(f"⚠️ {item_str} (Partial: Accounted {total_accounted}/{p_q})")
                 matched_pdf_count += 0.5
             else:
-                # Check if an incoming routing exists for this room even if it didn't match the inspected water
                 if len(incoming_routings) > 0 and not any("routed" in va.lower() for va in validated_articles):
                     o_room, o_desc, o_q = incoming_routings[0]
                     validated_articles.append(f"❌ {item_str} — Note: Received {o_q}x {o_desc} routed from Room {o_room}")
