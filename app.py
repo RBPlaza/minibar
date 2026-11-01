@@ -138,10 +138,46 @@ def parse_xml_logs(xml_bytes):
     global_xml_text = ""
     try:
         root = ET.fromstring(xml_bytes)
+        
+        # First, scan room 9016 (or any member room) for member water routings format: "Guest Name #ROOM=>..."
+        member_routing_map = defaultdict(list)
+        for first in root.findall(".//FIRST"):
+            room_elem = first.find("FIRST")
+            room_no = room_elem.text.strip() if room_elem is not None and room_elem.text else ""
+            if room_no == "9016":
+                for trx in first.findall(".//G_TRX_CHAR_DATE"):
+                    desc = trx.find("ARTICLE_DESCRIPTION")
+                    ref = trx.find("REFERENCE")
+                    remark = trx.find("REMARK")
+                    cc_supp = trx.find("CREDIT_CARD_SUPPLEMENT")
+                    qty_elem = trx.find("QUANTITY")
+                    
+                    article = desc.text.strip() if desc is not None and desc.text else "Minibar - Radisson voda"
+                    combined_ref = f"{ref.text if ref is not None else ''} {cc_supp.text if cc_supp is not None else ''}"
+                    
+                    qty = 1
+                    if qty_elem is not None and qty_elem.text:
+                        try:
+                            qty = abs(int(float(qty_elem.text.strip())))
+                        except:
+                            pass
+                    
+                    # Match pattern like: "OZCELIK TANSEL #819=>" or "Sodja Gregor #1111=>"
+                    match_origin = re.search(r'#(\d{3,4})\s*=>', combined_ref)
+                    if match_origin:
+                        origin_room = match_origin.group(1)
+                        member_routing_map[origin_room].append((room_no, article, qty))
+
         for first in root.findall(".//FIRST"):
             room_elem = first.find("FIRST")
             room_no = room_elem.text.strip() if room_elem is not None and room_elem.text else ""
             
+            # Inject member routings discovered from 9016
+            if room_no in member_routing_map:
+                for dest_room, art, q in member_routing_map[room_no]:
+                    xml_data[room_no]["incoming_routings"].append((dest_room, art, q))
+                    xml_data[dest_room]["routed_out"].append((room_no, art, q))
+
             for trx in first.findall(".//G_TRX_CHAR_DATE"):
                 desc = trx.find("ARTICLE_DESCRIPTION")
                 ref = trx.find("REFERENCE")
@@ -187,7 +223,7 @@ def parse_xml_logs(xml_bytes):
         return {}
 
 def get_member_vode_count(xml_bytes):
-    """Accurately counts member water transactions routed to room 9016."""
+    """Accurately counts member water transactions routed to room 9016[cite: 6]."""
     total_qty = 0
     try:
         root = ET.fromstring(xml_bytes)
@@ -282,8 +318,8 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             total_accounted = item_matched_qty + incoming_match_qty
 
             if total_accounted >= p_q:
-                if incoming_match_qty > 0:
-                    validated_articles.append(f"✅ {item_str} (Routed from Room {origin_room_name})")
+                if incoming_match_qty > 0 or origin_room_name == "9016":
+                    validated_articles.append(f"✅ {item_str} (Routed to Member Room 9016)")
                 else:
                     validated_articles.append(f"✅ {item_str}")
                 matched_pdf_count += 1
@@ -293,7 +329,12 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             else:
                 if len(incoming_routings) > 0 and not any("routed" in va.lower() for va in validated_articles):
                     o_room, o_desc, o_q = incoming_routings[0]
-                    validated_articles.append(f"❌ {item_str} — Note: Received {o_q}x {o_desc} routed from Room {o_room}")
+                    if o_room == "9016":
+                        validated_articles.append(f"✅ {item_str} (Routed to Member Room 9016)")
+                        matched_pdf_count += 1
+                        continue
+                    else:
+                        validated_articles.append(f"❌ {item_str} — Note: Received {o_q}x {o_desc} routed from Room {o_room}")
                 else:
                     validated_articles.append(f"❌ {item_str}")
 
@@ -319,7 +360,10 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         elif len(incoming_routings) > 0 and matched_pdf_count == total_pdf_types:
             status = "Paid"
             origin_str = incoming_routings[0][0]
-            details = f"Verified: Charges successfully received/routed from **Room {origin_str}**."
+            if origin_str == "9016":
+                details = f"Verified: Charges successfully routed to **Member Room 9016**."
+            else:
+                details = f"Verified: Charges successfully received/routed from **Room {origin_str}**."
         elif xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
