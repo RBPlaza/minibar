@@ -172,23 +172,15 @@ def parse_xml_logs(xml_bytes):
                     xml_data[room_no]["items"].append((article, qty))
                     xml_data[room_no]["total_qty"] += qty
                     
-                # Strict routing check: only track outbound routing if explicit destination room or source room match
+                # Explicit routing parser: Look for "Routed From ... Room #XXX"
                 combined_source_check = f"{reference} {rem_text} {cc_text}"
-                route_match = re.search(r'(?:Routed From.*?Room\s*#|iz\s*#?)(\d{3,4})', combined_source_check, re.IGNORECASE)
+                route_match = re.search(r'Routed\s+From.*?Room\s*#(\d{3,4})', combined_source_check, re.IGNORECASE)
                 if route_match:
                     origin_room = route_match.group(1)
                     if origin_room != room_no:
-                        # This means room_no (e.g. 1111) received a charge from origin_room (e.g. 411)
+                        # Register that room_no received a charge from origin_room
                         xml_data[origin_room]["target_rooms"].add(room_no)
-                
-                if "=>" in full_trx_text:
-                    source_match = re.search(r'#?(\d{3,4})\s*=>', full_trx_text)
-                    dest_match = re.search(r'=>\s*(?:[A-Z\s]+)?#?(\d{3,4})', full_trx_text)
-                    if source_match and dest_match:
-                        src_room = source_match.group(1)
-                        dst_room = dest_match.group(1)
-                        xml_data[src_room]["target_rooms"].add(dst_room)
-                    
+                        
         xml_data["_GLOBAL_TEXT_"] = global_xml_text
         return xml_data
     except Exception as e:
@@ -260,7 +252,7 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         total_pdf_types = len(pdf_parsed_items)
         unconsumed_paid_items = []
 
-        # Check for unconsumed items paid in XML
+        # Check for unconsumed items paid in XML (only if no explicit routing took place)
         for x_desc, x_q in xml_items_raw:
             clean_x = clean_text(x_desc)
             found_match = False
@@ -304,12 +296,12 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
         elif xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
-        elif matched_pdf_count > 0:
+        elif matched_count := matched_pdf_count > 0:
             status = "Partially Paid"
             details = f"Partial match: Accounted for {int(matched_pdf_count)} of {total_pdf_types} inspected item type(s)."
         else:
             status = "Unpaid"
-            details = "No matching transaction or routing found in XML log."
+            details = "No matching transaction or routing found in XML log for this room."
             
         audit_results.append({
             "Room Number": room,
