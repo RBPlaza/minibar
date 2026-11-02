@@ -173,21 +173,30 @@ def parse_xml_logs(xml_bytes):
                     xml_data[room_no]["items"].append((article, qty))
                     xml_data[room_no]["total_qty"] += qty
                 
-                # Check for '=>' transfer/routing syntax (e.g. PRSA KRISTINA #1116=>RADISSON VODE MEMBERJI #9016)
-                match_arrow = re.search(r'#(\d{3,4})\s*=>', f"{reference} {cc_text}")
+                # 1. Check for standalone room number in CREDIT_CARD_SUPPLEMENT or REMARK (e.g. room 615 paying for room 410)
+                for candidate_text in [cc_text, rem_text]:
+                    candidate_clean = candidate_text.strip()
+                    if re.fullmatch(r'\d{3,4}', candidate_clean):
+                        paying_room = candidate_clean
+                        if paying_room != room_no:
+                            xml_data[room_no]["incoming_routings"].append((paying_room, article, qty))
+                            xml_data[paying_room]["routed_out"].append((room_no, article, qty))
+
+                # 2. Check for '=>' transfer/routing syntax (e.g. FRIEDL GUENTER #601=>RADISSON VODE MEMBERJI #9016)
+                match_arrow = re.search(r'#(\d{3,4})\s*=>', f"{reference} {cc_text} {rem_text}")
                 if match_arrow:
                     origin_room = match_arrow.group(1)
                     if origin_room != room_no:
                         xml_data[origin_room]["routed_out"].append((room_no, article, qty))
                         xml_data[origin_room]["incoming_routings"].append((origin_room, article, qty))
                     
-                # Check standard 'Routed From' syntax
+                # 3. Check standard 'Routed From' syntax
                 route_match = re.search(r'Routed\s+From.*?Room\s*#(\d{3,4})', full_trx_text, re.IGNORECASE)
                 if route_match:
                     origin_room = route_match.group(1)
                     if origin_room != room_no:
                         xml_data[room_no]["incoming_routings"].append((origin_room, article, qty))
-                        xml_data[room_no]["routed_out"].append((room_no, article, qty))
+                        xml_data[origin_room]["routed_out"].append((room_no, article, qty))
                         
         xml_data["_GLOBAL_TEXT_"] = global_xml_text
         return xml_data
@@ -278,7 +287,6 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                 if c_xml_eq in clean_x or clean_x in c_xml_eq or c_pdf in clean_x:
                     item_matched_qty += x_q
 
-            # Strict item matching for routed_out items: only count routed qty if the item description matches this inspected item!
             routed_match_qty = 0
             matched_dst_room = ""
             for dst_room, r_desc, r_q in routed_out:
@@ -287,14 +295,21 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
                     routed_match_qty += r_q
                     matched_dst_room = dst_room
 
-            total_accounted = item_matched_qty + routed_match_qty
+            incoming_match_qty = 0
+            matched_origin_room = ""
+            for o_room, o_desc, o_q in incoming_routings:
+                clean_o = clean_text(o_desc)
+                if c_xml_eq in clean_o or clean_o in c_xml_eq or c_pdf in clean_o:
+                    incoming_match_qty += o_q
+                    matched_origin_room = o_room
+
+            total_accounted = item_matched_qty + routed_match_qty + incoming_match_qty
 
             if total_accounted >= p_q:
                 if routed_match_qty > 0:
                     validated_articles.append(f"✅ {item_str} (Routed to Room {matched_dst_room})")
-                elif len(incoming_routings) > 0:
-                    origin_room_name = incoming_routings[0][0]
-                    validated_articles.append(f"✅ {item_str} (Routed from Room {origin_room_name})")
+                elif incoming_match_qty > 0:
+                    validated_articles.append(f"✅ {item_str} (Paid on Room {matched_origin_room})")
                 else:
                     validated_articles.append(f"✅ {item_str}")
                 matched_pdf_count += 1
@@ -304,11 +319,6 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             else:
                 validated_articles.append(f"❌ {item_str}")
 
-        routed_out_notes = []
-        for dst_room, r_desc, r_q in routed_out:
-            routed_out_notes.append(f"{r_q}x {r_desc} routed to Room {dst_room}")
-
-        # Check if ALL inspected items were successfully matched or routed
         if len(unconsumed_paid_items) > 0 and len(incoming_routings) == 0 and len(routed_out) == 0:
             status = "Item Mismatch"
             unconsumed_str = ", ".join(unconsumed_paid_items)
@@ -318,7 +328,7 @@ def perform_reconciliation(pdf_rooms, xml_rooms):
             details = "Verified: All inspected items accounted for in XML log."
         elif matched_pdf_count == total_pdf_types and (len(incoming_routings) > 0 or len(routed_out) > 0):
             status = "Paid"
-            details = "Verified: All inspected items accounted for (including valid routings)."
+            details = "Verified: All inspected items accounted for (including valid routings/payments)."
         elif xml_info["zeroed"]:
             status = "Unpaid"
             details = "Marked in XML as zero consumption (PREVERJENO, NI BILO PORABE)."
